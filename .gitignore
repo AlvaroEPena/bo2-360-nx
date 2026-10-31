@@ -1,0 +1,57 @@
+# Game data and anything derived from it: never commit
+game/
+work/
+generated/
+**/generated/
+*.xex
+*.xexp
+*.pe
+*.bin
+*.ff
+*.ipak
+*.sabl
+*.sabs
+*.bik
+*.webm
+*.spvpack
+*.gscpack
+*.spvidx
+*.dksh
+shader_library/
+
+# Upstream reference checkouts (rebuilt by tools/build_host.sh)
+refs/
+
+# SDK third-party sources: fetched from the official ReXGlue SDK v0.10.0 submodules by tools/fetch_thirdparty.py.
+# Only the few files we changed there are committed (added once with git add -f).
+/sdk/thirdparty/*
+!/sdk/thirdparty/CMakeLists.txt
+
+# Build outputs
+out/
+build/
+*.nro
+*.nso
+*.nsp
+*.elf
+*.gcda
+*.obj
+*.exe
+*.dll
+
+# Logs (local paths, per-run data)
+*.log
+app/logs/
+
+# Ghidra / REA local state
+*.gpr
+*.rep/
+*.lock
+.rea/
+
+# Python
+__pycache__/
+
+# This machine's data folder (tools/data_dir.sh) and the default one
+/bo2_data.txt
+/data/

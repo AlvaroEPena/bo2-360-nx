@@ -1,0 +1,58 @@
+# ============================================================================
+#  BO2 campaign (TU18 default.xex) - manual declarations for the codegen
+#
+#  Included from bo2cp_manifest.toml, flat schema (sections at the root).
+#  Valid address range: 0x82000000 - 0x844F3000 (base + 38,731,776 bytes).
+# ============================================================================
+
+# --- setjmp / longjmp (root keys: must stay ABOVE any table) -----------------
+# The same two routines as default_mp's 0x82918CA0 / 0x82919E50 (app/overrides.toml):
+# their first 24 instructions match word for word apart from 16-bit immediates.
+setjmp_address = 0x826EC320
+longjmp_address = 0x826EC7B0
+
+# --- Codegen speed options (root keys: must stay ABOVE [functions]) -----------
+# The same as the Zombies program's (app/overrides.toml explains each): the
+# game's mfmsr/mtmsrd interrupt guards become no-ops instead of one global
+# lock (on the Switch that lock held Zombies at 0-4 FPS), and the condition,
+# XER, CTR, non-volatile and scratch vector registers become C++ locals.
+# What must stay in ctx is marked share_registers in [functions]
+# (tools/read_before_write.py --gen campaign/generated/default, run by codegen.sh).
+skip_msr = true
+cr_as_local = true
+xer_as_local = true
+ctr_as_local = true
+non_volatile_as_local = true
+vector_scratch_as_local = true
+
+[functions]
+
+# --- Tail-branch targets, round 1 (tools/codegen_fix_unresolved.py) ---
+"0x823D20D8" = { }   # stw r4, 0x20(r3); blr   <- 0x8247D4F8
+
+# --- Software-pipelined VMX loops that read v57-v63 before writing them ------
+# tools/read_before_write.py on the campaign: the first pass of each loop reads
+# vectors the previous pass left (as default_mp's sub_828212C0 / sub_82821A80
+# and sub_8281F610), called from sub_82603618, sub_82605230 and sub_826059A8.
+# They keep every register in ctx, as without the register options. The other
+# early reads it lists are harmless, as in the Zombies program: the VMX copy
+# kernels sub_825C7174 / 825C7640 / 825C79D0 (stack saves, xor r30,r30,r30),
+# sub_8260FDC0 (subfe r29,r29,r29), setjmp itself (sub_826EC320) and
+# sub_82702324 (reached only indirectly, near the end of .text).
+"0x82603130" = { share_registers = true }
+"0x82604DE0" = { share_registers = true }
+"0x826055A0" = { share_registers = true }
+
+# --- Native C library functions ([rexcrt]) -----------------------------------
+# As in the Zombies program (app/overrides.toml): the codegen drops each
+# function listed here and calls rexcrt_<key> instead, implemented in
+# app/src/bo2zm_crt.cpp. The campaign's copies of the same routines are
+# memcpy and memmove byte for byte, the others equal apart from call targets.
+[rexcrt]
+bo2zm_memcpy = 0x826E94D0
+bo2zm_memmove = 0x826E9410
+bo2zm_memset = 0x826EB5D0
+bo2zm_xmemcpy = 0x825C06D8
+bo2zm_xmemset = 0x825C01A8
+bo2zm_bigcopy = 0x825C0578
+bo2zm_bigcopy2 = 0x825C0628

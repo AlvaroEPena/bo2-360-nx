@@ -1,0 +1,296 @@
+#  23502 functions measured, 0 files skipped (name/address mismatch)
+#  36 entries; this run: data? 3, native 5, padding 11174, pointers 257, tiny 29
+tiny        0x82131184     4 B
+tiny        0x821345EC     4 B
+tiny        0x82177534     4 B
+tiny        0x8220EF10     4 B
+tiny        0x82224FF4     4 B
+tiny        0x82237D18     4 B
+tiny        0x82259AE4     4 B
+tiny        0x822D9AF0     4 B
+tiny        0x82341A90     4 B
+tiny        0x82365B38     4 B
+tiny        0x8236FCF4     4 B
+pointers    0x8237F830     8 B  all words are image addresses
+tiny        0x823C9F74     4 B
+tiny        0x823D1DB8     4 B
+tiny        0x8247B040     4 B
+tiny        0x825588B8     4 B
+tiny        0x825B2B24     4 B
+data?       0x825C01A8   416 B  undecodable at 0x825C0210
+native      0x825C0578   172 B  [rexcrt]: replaced by native code
+native      0x825C0628   172 B  [rexcrt]: replaced by native code
+data?       0x825C06D8   756 B  undecodable at 0x825C0804
+pointers    0x825C4118     8 B  all words are image addresses
+pointers    0x825C46E8     8 B  all words are image addresses
+pointers    0x825C4FE0     8 B  all words are image addresses
+pointers    0x825C52D8     8 B  all words are image addresses
+pointers    0x825C69B0     8 B  all words are image addresses
+pointers    0x825C9340     8 B  all words are image addresses
+pointers    0x825DB348     8 B  all words are image addresses
+tiny        0x825E0734     4 B
+tiny        0x825E0758     4 B
+tiny        0x825E0780     4 B
+tiny        0x825E07A8     4 B
+tiny        0x825ECCE8     4 B
+tiny        0x825ECD10     4 B
+tiny        0x825ECD38     4 B
+pointers    0x825FB908     8 B  all words are image addresses
+pointers    0x825FE228     8 B  all words are image addresses
+tiny        0x8261A810     4 B
+tiny        0x8261A8CC     4 B
+tiny        0x8261BFB0     4 B
+tiny        0x8261BFE0     4 B
+pointers    0x8264CB98     8 B  all words are image addresses
+pointers    0x8264E378     8 B  all words are image addresses
+pointers    0x8264F008     8 B  all words are image addresses
+pointers    0x8264F370     8 B  all words are image addresses
+pointers    0x8264F478     8 B  all words are image addresses
+pointers    0x8264FD20     8 B  all words are image addresses
+pointers    0x8264FEF0     8 B  all words are image addresses
+pointers    0x8264FF88     8 B  all words are image addresses
+pointers    0x82650148     8 B  all words are image addresses
+pointers    0x826502C8     8 B  all words are image addresses
+pointers    0x826504A0     8 B  all words are image addresses
+pointers    0x82650690     8 B  all words are image addresses
+pointers    0x82650838     8 B  all words are image addresses
+pointers    0x82650B88     8 B  all words are image addresses
+pointers    0x82650DC8     8 B  all words are image addresses
+pointers    0x82650ED8     8 B  all words are image addresses
+pointers    0x82650FC0     8 B  all words are image addresses
+pointers    0x826510A8     8 B  all words are image addresses
+pointers    0x82651190     8 B  all words are image addresses
+pointers    0x82651278     8 B  all words are image addresses
+pointers    0x82651360     8 B  all words are image addresses
+pointers    0x82651448     8 B  all words are image addresses
+pointers    0x82651530     8 B  all words are image addresses
+pointers    0x82651618     8 B  all words are image addresses
+pointers    0x82651760     8 B  all words are image addresses
+pointers    0x82651CA0     8 B  all words are image addresses
+pointers    0x82653330     8 B  all words are image addresses
+pointers    0x826534E8     8 B  all words are image addresses
+pointers    0x82653868     8 B  all words are image addresses
+pointers    0x82653968     8 B  all words are image addresses
+pointers    0x82653A50     8 B  all words are image addresses
+pointers    0x82653E10     8 B  all words are image addresses
+pointers    0x82653EA0     8 B  all words are image addresses
+pointers    0x82653F70     8 B  all words are image addresses
+pointers    0x826541B8     8 B  all words are image addresses
+pointers    0x82654468     8 B  all words are image addresses
+pointers    0x82654550     8 B  all words are image addresses
+pointers    0x82654690     8 B  all words are image addresses
+pointers    0x82654860     8 B  all words are image addresses
+pointers    0x826549F0     8 B  all words are image addresses
+pointers    0x82654CE8     8 B  all words are image addresses
+pointers    0x82654E60     8 B  all words are image addresses
+pointers    0x82655020     8 B  all words are image addresses
+pointers    0x82655168     8 B  all words are image addresses
+pointers    0x82655298     8 B  all words are image addresses
+pointers    0x826556A8     8 B  all words are image addresses
+pointers    0x82655830     8 B  all words are image addresses
+pointers    0x826558A8     8 B  all words are image addresses
+pointers    0x82655AC0     8 B  all words are image addresses
+pointers    0x82655D08     8 B  all words are image addresses
+pointers    0x82655F50     8 B  all words are image addresses
+pointers    0x82656198     8 B  all words are image addresses
+pointers    0x82656608     8 B  all words are image addresses
+pointers    0x826566F0     8 B  all words are image addresses
+pointers    0x826569C0     8 B  all words are image addresses
+pointers    0x82656C08     8 B  all words are image addresses
+pointers    0x82656ED8     8 B  all words are image addresses
+pointers    0x82657180     8 B  all words are image addresses
+pointers    0x826573B8     8 B  all words are image addresses
+pointers    0x82657E10     8 B  all words are image addresses
+pointers    0x82657F78     8 B  all words are image addresses
+pointers    0x82658218     8 B  all words are image addresses
+pointers    0x82658370     8 B  all words are image addresses
+pointers    0x826584D8     8 B  all words are image addresses
+pointers    0x82658598     8 B  all words are image addresses
+pointers    0x82658838     8 B  all words are image addresses
+pointers    0x82658DB0     8 B  all words are image addresses
+pointers    0x82658F48     8 B  all words are image addresses
+pointers    0x826591A0     8 B  all words are image addresses
+pointers    0x82659548     8 B  all words are image addresses
+pointers    0x82659608     8 B  all words are image addresses
+pointers    0x82659840     8 B  all words are image addresses
+pointers    0x82659A88     8 B  all words are image addresses
+pointers    0x82659E28     8 B  all words are image addresses
+pointers    0x82659FF8     8 B  all words are image addresses
+pointers    0x8265A1D0     8 B  all words are image addresses
+pointers    0x8265A2A8     8 B  all words are image addresses
+pointers    0x8265A4A8     8 B  all words are image addresses
+pointers    0x8265A780     8 B  all words are image addresses
+pointers    0x8265A820     8 B  all words are image addresses
+pointers    0x8265AA68     8 B  all words are image addresses
+pointers    0x8265AD68     8 B  all words are image addresses
+pointers    0x8265AEE8     8 B  all words are image addresses
+pointers    0x8265B110     8 B  all words are image addresses
+pointers    0x8265B228     8 B  all words are image addresses
+pointers    0x8265B310     8 B  all words are image addresses
+pointers    0x8265B428     8 B  all words are image addresses
+pointers    0x8265B820     8 B  all words are image addresses
+pointers    0x8265B8E0     8 B  all words are image addresses
+pointers    0x8265BA00     8 B  all words are image addresses
+pointers    0x8265BAE0     8 B  all words are image addresses
+pointers    0x8265BBE8     8 B  all words are image addresses
+pointers    0x8265BC60     8 B  all words are image addresses
+pointers    0x8265BE50     8 B  all words are image addresses
+pointers    0x8265BF80     8 B  all words are image addresses
+pointers    0x8265C018     8 B  all words are image addresses
+pointers    0x8265C128     8 B  all words are image addresses
+pointers    0x8265C3B0     8 B  all words are image addresses
+pointers    0x8265C5C8     8 B  all words are image addresses
+pointers    0x8265C718     8 B  all words are image addresses
+pointers    0x8265CA88     8 B  all words are image addresses
+pointers    0x8265CCD0     8 B  all words are image addresses
+pointers    0x8265D278     8 B  all words are image addresses
+pointers    0x8265D478     8 B  all words are image addresses
+pointers    0x8265DB40     8 B  all words are image addresses
+pointers    0x8265DC78     8 B  all words are image addresses
+pointers    0x8265DE68     8 B  all words are image addresses
+pointers    0x8265DFB8     8 B  all words are image addresses
+pointers    0x8265E130     8 B  all words are image addresses
+pointers    0x8265E1F8     8 B  all words are image addresses
+pointers    0x8265E280     8 B  all words are image addresses
+pointers    0x8265E348     8 B  all words are image addresses
+pointers    0x8265E588     8 B  all words are image addresses
+pointers    0x8265E8B8     8 B  all words are image addresses
+pointers    0x8265E950     8 B  all words are image addresses
+pointers    0x8265E9C8     8 B  all words are image addresses
+pointers    0x8265ED10     8 B  all words are image addresses
+pointers    0x8265EFA0     8 B  all words are image addresses
+pointers    0x8265F1B0     8 B  all words are image addresses
+pointers    0x8265F730     8 B  all words are image addresses
+pointers    0x8265F918     8 B  all words are image addresses
+pointers    0x8265FA60     8 B  all words are image addresses
+pointers    0x8265FB10     8 B  all words are image addresses
+pointers    0x8265FBE0     8 B  all words are image addresses
+pointers    0x8265FD20     8 B  all words are image addresses
+pointers    0x82660468     8 B  all words are image addresses
+pointers    0x82660628     8 B  all words are image addresses
+pointers    0x82660878     8 B  all words are image addresses
+pointers    0x82660DE8     8 B  all words are image addresses
+pointers    0x82661090     8 B  all words are image addresses
+pointers    0x826618E0     8 B  all words are image addresses
+pointers    0x82661B30     8 B  all words are image addresses
+pointers    0x82661C58     8 B  all words are image addresses
+pointers    0x82661D18     8 B  all words are image addresses
+pointers    0x82661DD8     8 B  all words are image addresses
+pointers    0x82662570     8 B  all words are image addresses
+pointers    0x82662688     8 B  all words are image addresses
+pointers    0x826628D8     8 B  all words are image addresses
+pointers    0x82662A30     8 B  all words are image addresses
+tiny        0x82662B5C     4 B
+pointers    0x82662D70     8 B  all words are image addresses
+pointers    0x82663100     8 B  all words are image addresses
+pointers    0x826632A8     8 B  all words are image addresses
+pointers    0x82663488     8 B  all words are image addresses
+pointers    0x82663C08     8 B  all words are image addresses
+pointers    0x82663EA0     8 B  all words are image addresses
+pointers    0x82664078     8 B  all words are image addresses
+pointers    0x82664248     8 B  all words are image addresses
+pointers    0x826645B8     8 B  all words are image addresses
+pointers    0x82664830     8 B  all words are image addresses
+pointers    0x826649D8     8 B  all words are image addresses
+pointers    0x82664B78     8 B  all words are image addresses
+pointers    0x82664D30     8 B  all words are image addresses
+pointers    0x82664EE8     8 B  all words are image addresses
+pointers    0x82665138     8 B  all words are image addresses
+pointers    0x82665868     8 B  all words are image addresses
+pointers    0x82665A58     8 B  all words are image addresses
+pointers    0x82665C30     8 B  all words are image addresses
+pointers    0x82666270     8 B  all words are image addresses
+pointers    0x82666740     8 B  all words are image addresses
+pointers    0x82666818     8 B  all words are image addresses
+pointers    0x82666918     8 B  all words are image addresses
+pointers    0x82666A70     8 B  all words are image addresses
+pointers    0x82666C60     8 B  all words are image addresses
+pointers    0x82666F10     8 B  all words are image addresses
+pointers    0x82667198     8 B  all words are image addresses
+pointers    0x82667208     8 B  all words are image addresses
+pointers    0x826672E0     8 B  all words are image addresses
+pointers    0x82667440     8 B  all words are image addresses
+pointers    0x82667C00     8 B  all words are image addresses
+pointers    0x82667D70     8 B  all words are image addresses
+pointers    0x82668338     8 B  all words are image addresses
+pointers    0x826684D0     8 B  all words are image addresses
+pointers    0x826685B8     8 B  all words are image addresses
+pointers    0x826687C0     8 B  all words are image addresses
+pointers    0x82668880     8 B  all words are image addresses
+pointers    0x826689F8     8 B  all words are image addresses
+pointers    0x82668CD8     8 B  all words are image addresses
+pointers    0x82668F60     8 B  all words are image addresses
+pointers    0x82669150     8 B  all words are image addresses
+pointers    0x82669208     8 B  all words are image addresses
+pointers    0x82669398     8 B  all words are image addresses
+pointers    0x82669578     8 B  all words are image addresses
+pointers    0x82669868     8 B  all words are image addresses
+pointers    0x82669BC0     8 B  all words are image addresses
+pointers    0x82669D18     8 B  all words are image addresses
+pointers    0x82669F50     8 B  all words are image addresses
+pointers    0x8266A190     8 B  all words are image addresses
+pointers    0x8266A3E0     8 B  all words are image addresses
+pointers    0x8266A610     8 B  all words are image addresses
+pointers    0x8266A888     8 B  all words are image addresses
+pointers    0x8266A9E0     8 B  all words are image addresses
+pointers    0x8266AC50     8 B  all words are image addresses
+pointers    0x8266B2C8     8 B  all words are image addresses
+pointers    0x8266B658     8 B  all words are image addresses
+pointers    0x8266BD48     8 B  all words are image addresses
+pointers    0x8266BE58     8 B  all words are image addresses
+pointers    0x8266C388     8 B  all words are image addresses
+pointers    0x8266CB10     8 B  all words are image addresses
+pointers    0x8266CD98     8 B  all words are image addresses
+tiny        0x8269AB20     4 B
+native      0x826E9410   188 B  [rexcrt]: replaced by native code
+native      0x826E94D0  1160 B  [rexcrt]: replaced by native code
+native      0x826EB5D0   160 B  [rexcrt]: replaced by native code
+pointers    0x826EBF70     8 B  all words are image addresses
+pointers    0x826ED3F8     8 B  all words are image addresses
+pointers    0x826ED7A8     8 B  all words are image addresses
+pointers    0x826EDF10     8 B  all words are image addresses
+pointers    0x826EE198     8 B  all words are image addresses
+pointers    0x826EE330     8 B  all words are image addresses
+pointers    0x826EE438     8 B  all words are image addresses
+pointers    0x826EE838     8 B  all words are image addresses
+pointers    0x826EEBE8     8 B  all words are image addresses
+pointers    0x826EED10     8 B  all words are image addresses
+pointers    0x826EF960     8 B  all words are image addresses
+pointers    0x826EFDA0     8 B  all words are image addresses
+pointers    0x826EFFA8     8 B  all words are image addresses
+pointers    0x826F0188     8 B  all words are image addresses
+pointers    0x826F0290     8 B  all words are image addresses
+pointers    0x826F03D0     8 B  all words are image addresses
+pointers    0x826F0738     8 B  all words are image addresses
+pointers    0x826F0810     8 B  all words are image addresses
+pointers    0x826F0A50     8 B  all words are image addresses
+pointers    0x826F0C78     8 B  all words are image addresses
+pointers    0x826F1828     8 B  all words are image addresses
+pointers    0x826F3D30     8 B  all words are image addresses
+pointers    0x826F41D0     8 B  all words are image addresses
+pointers    0x826F42A8     8 B  all words are image addresses
+pointers    0x826F43D8     8 B  all words are image addresses
+pointers    0x826F9948     8 B  all words are image addresses
+pointers    0x826FA110     8 B  all words are image addresses
+pointers    0x826FA350     8 B  all words are image addresses
+pointers    0x826FA470     8 B  all words are image addresses
+pointers    0x826FA618     8 B  all words are image addresses
+pointers    0x826FA678     8 B  all words are image addresses
+pointers    0x826FAAA8     8 B  all words are image addresses
+pointers    0x826FABA8     8 B  all words are image addresses
+pointers    0x826FB660     8 B  all words are image addresses
+pointers    0x826FB8C8     8 B  all words are image addresses
+pointers    0x826FBB30     8 B  all words are image addresses
+pointers    0x826FBF40     8 B  all words are image addresses
+pointers    0x826FDCA0     8 B  all words are image addresses
+pointers    0x826FDE28     8 B  all words are image addresses
+pointers    0x826FE248     8 B  all words are image addresses
+pointers    0x826FEF48     8 B  all words are image addresses
+pointers    0x826FF170     8 B  all words are image addresses
+pointers    0x826FF2E8     8 B  all words are image addresses
+pointers    0x826FF578     8 B  all words are image addresses
+pointers    0x826FFE40     8 B  all words are image addresses
+pointers    0x82700418     8 B  all words are image addresses
+pointers    0x82701A60     8 B  all words are image addresses
+pointers    0x82701B90     8 B  all words are image addresses
+data?       0x8270C8C4  4080 B  undecodable at 0x8270C8C4
