@@ -357,68 +357,248 @@ namespace {
 // source port would hand the title a port it does not know (BO2 tags packets from its ports 1000/1001 and reads any
 // other port from the packet, 0x824E1CA0), so the title sees the port it talks on and replies go to the port the
 // datagram really came from. The table also lets a broadcast reach them (InternetCopies).
+//
+// Consoles behind one NAT (two on the same phone hotspot or home network) share a public address and differ only in
+// their NAT ports. The title knows a peer by its address alone, so all but the first of them get a stand-in address of
+// their own (240.66.0.x, which nothing on the internet uses); sends to it go to that console's real address and ports.
+// Which NAT ports belong to which console comes from the relay: each console's endpoints and punches carry its relay
+// session (online_relay.h).
 struct InternetPeer {
-  uint32_t ip = 0;
+  uint32_t ip = 0;          // where it is on the internet
+  uint32_t title_ip = 0;    // the address the title knows it by: ip, or a stand-in
+  uint64_t console = 0;     // its relay session, 0 while unknown
   uint16_t guest_port = 0;  // the title's port, as the title sees it
   uint16_t host_port = 0;   // the port the datagram came from (or, until heard, the port the relay gave)
   int64_t when_ns = 0;
   bool heard = false;       // a datagram came from it; otherwise the relay's word only
 };
 std::mutex g_internet_mutex;
-std::array<InternetPeer, 16> g_internet;
+std::array<InternetPeer, 32> g_internet;
 
-// A datagram from ip:host_port reached a title socket bound to guest_port (both ports as the socket layer sees them).
-// Returns the port to report to the title.
-uint16_t NoteInternetPeer(uint32_t ip, uint16_t host_port, uint16_t bound_guest_port) {
+// The title address of each console the relay named, by public address and session (under g_internet_mutex).
+struct NamedConsole {
+  uint32_t ip = 0;
+  uint64_t console = 0;
+  uint32_t title_ip = 0;
+  int64_t heard_ns = 0;  // the last datagram known to be its
+  uint32_t lan_ip = 0;   // its LAN address, as it says
+  bool tagged = false;   // its XNADDR carries its session (MakeOwnXnAddr): it said so through the relay or its XNADDR
+};
+// Consoles behind this console's own router, known from their tagged XNADDRs: the title reaches them on the LAN.
+struct LanPeer {
+  uint32_t lan_ip = 0;
+  uint32_t ip = 0;  // the public address they share with this console
+  uint64_t console = 0;
+};
+std::array<LanPeer, 8> g_lan_peers;
+size_t g_lan_peers_next = 0;
+std::array<NamedConsole, 16> g_named;
+size_t g_named_next = 0;
+// The relay's word on whose each public endpoint is (kept apart from what is heard, which may come from elsewhere).
+struct NamedEndpoint {
+  uint32_t ip = 0;
+  uint16_t host_port = 0;
+  uint16_t guest_port = 0;
+  uint64_t console = 0;
+};
+std::array<NamedEndpoint, 48> g_endpoints;
+size_t g_endpoints_next = 0;
+uint32_t g_stand_in_next = 0;
+constexpr uint32_t kStandInBase = 0xF0420000u;  // 240.66.0.0
+constexpr int64_t kSharedQuietNs = 10'000'000'000ll;
+
+std::string Dotted(uint32_t ip) {
+  return std::to_string(ip >> 24) + "." + std::to_string((ip >> 16) & 0xFF) + "." + std::to_string((ip >> 8) & 0xFF) +
+         "." + std::to_string(ip & 0xFF);
+}
+
+// The address the title knows the console with this relay session at ip by: the first one named at a public address
+// keeps it, every other one there gets a stand-in. An unnamed console (session 0) is the public address.
+NamedConsole& NameConsole(uint32_t ip, uint64_t console) {
+  bool shared = false;
+  for (auto& named : g_named) {
+    if (named.ip != ip || !named.console) continue;
+    if (named.console == console) return named;
+    shared = true;
+  }
+  NamedConsole& slot = g_named[g_named_next++ % g_named.size()];
+  slot = {};
+  slot.ip = ip;
+  slot.console = console;
+  slot.title_ip = shared ? kStandInBase | (1 + g_stand_in_next++ % 250) : ip;
+  if (shared) {
+    REXSYS_INFO("[online] another console behind {} (a shared address): the game knows it as {}", Dotted(ip),
+                Dotted(slot.title_ip));
+  }
+  return slot;
+}
+
+uint32_t TitleIpFor(uint32_t ip, uint64_t console) { return console ? NameConsole(ip, console).title_ip : ip; }
+
+// The tag in an XNADDR's abOnline (offset 16, otherwise unused in System Link): "BZ", a version, the console's relay
+// session and its LAN address.
+constexpr int kTagAt = 16;
+
+void WriteTag(uint8_t* xnaddr, uint64_t console, uint32_t lan_ip) {
+  uint8_t* tag = xnaddr + kTagAt;
+  tag[0] = 'B';
+  tag[1] = 'Z';
+  tag[2] = 1;
+  tag[3] = 0;
+  for (int i = 0; i < 8; ++i) tag[4 + i] = uint8_t(console >> (56 - 8 * i));
+  for (int i = 0; i < 4; ++i) tag[12 + i] = uint8_t(lan_ip >> (24 - 8 * i));
+}
+
+bool ReadTag(const uint8_t* xnaddr, uint64_t* console, uint32_t* lan_ip) {
+  const uint8_t* tag = xnaddr + kTagAt;
+  if (tag[0] != 'B' || tag[1] != 'Z' || tag[2] != 1) return false;
+  uint64_t session = 0;
+  uint32_t lan = 0;
+  for (int i = 0; i < 8; ++i) session = session << 8 | tag[4 + i];
+  for (int i = 0; i < 4; ++i) lan = lan << 8 | tag[12 + i];
+  if (!session) return false;
+  *console = session;
+  *lan_ip = lan;
+  return true;
+}
+
+// The newest entry for the title's view of a console and port, or nullptr.
+InternetPeer* FindTitle(uint32_t title_ip, uint16_t guest_port) {
+  InternetPeer* found = nullptr;
+  for (auto& peer : g_internet) {
+    if (peer.when_ns && peer.title_ip == title_ip && peer.guest_port == guest_port &&
+        (!found || peer.when_ns > found->when_ns)) {
+      found = &peer;
+    }
+  }
+  return found;
+}
+
+const NamedEndpoint* FindNamedEndpoint(uint32_t ip, uint16_t host_port) {
+  for (const auto& named : g_endpoints) {
+    if (named.console && named.ip == ip && named.host_port == host_port) return &named;
+  }
+  return nullptr;
+}
+
+// The newest entry for a public endpoint, or nullptr.
+const InternetPeer* FindEndpoint(uint32_t ip, uint16_t host_port) {
+  const InternetPeer* found = nullptr;
+  for (const auto& peer : g_internet) {
+    if (peer.when_ns && peer.ip == ip && peer.host_port == host_port && (!found || peer.when_ns > found->when_ns)) {
+      found = &peer;
+    }
+  }
+  return found;
+}
+
+InternetPeer* Oldest() {
+  InternetPeer* slot = &g_internet[0];
+  for (auto& peer : g_internet) {
+    if (peer.when_ns < slot->when_ns) slot = &peer;
+  }
+  return slot;
+}
+
+// A datagram from ip:host_port reached a title socket bound to guest_port (both ports as the socket layer sees them);
+// console is the sender's relay session when the datagram says (a punch), else 0. Gives the address and port to report
+// to the title. false: the datagram comes from a port the relay named for no console, at an address where a console
+// the relay named is talking right now: it may be another console behind the same address that the relay has not
+// named yet, so it is dropped until it is named (its next tries get through) and the title never mixes the two up.
+// A console alone behind its address is taken whatever port it comes from (a NAT may map each destination apart).
+bool NoteInternetPeer(uint32_t ip, uint16_t host_port, uint16_t bound_guest_port, uint64_t punch_console,
+                      uint32_t* title_ip, uint16_t* title_port) {
+  uint64_t console = punch_console;
   uint16_t guest = GuestPort(host_port);
   bool rewritten = guest == host_port && bound_guest_port && bound_guest_port < 1024;
   if (rewritten) guest = bound_guest_port;
   const int64_t now = SteadyNs();
   std::lock_guard lock(g_internet_mutex);
-  // The relay's endpoints say which title port a rewritten source port stands for.
-  for (const auto& peer : g_internet) {
-    if (peer.ip == ip && peer.host_port == host_port && peer.when_ns && peer.guest_port != host_port) {
-      guest = peer.guest_port;
-      rewritten = GuestPort(host_port) != guest;
+  // The relay's endpoints say whose this endpoint is, and which title port a rewritten source port stands for.
+  if (const NamedEndpoint* named = FindNamedEndpoint(ip, host_port)) {
+    guest = named->guest_port;
+    if (!console) console = named->console;
+  } else if (const InternetPeer* known = FindEndpoint(ip, host_port)) {
+    guest = known->guest_port;
+  }
+  rewritten = GuestPort(host_port) != guest;
+  if (!console) {
+    for (const auto& named : g_named) {
+      if (named.console && named.ip == ip && named.heard_ns && now - named.heard_ns < kSharedQuietNs) return false;
     }
   }
-  InternetPeer* slot = nullptr;
-  for (auto& peer : g_internet) {
-    if (peer.ip == ip && peer.guest_port == guest) slot = &peer;
+  const uint32_t title = TitleIpFor(ip, console);
+  for (auto& named : g_named) {
+    if (console && named.console == console && named.ip == ip) named.heard_ns = now;
   }
+  // A punch names its sender, and the title's datagrams to this console leave from the same port as the punch.
+  if (punch_console && !FindNamedEndpoint(ip, host_port)) {
+    g_endpoints[g_endpoints_next++ % g_endpoints.size()] = {ip, host_port, guest, punch_console};
+  }
+  InternetPeer* slot = FindTitle(title, guest);
   const bool fresh = !slot || slot->host_port != host_port || !slot->heard;
-  if (!slot) {
-    slot = &g_internet[0];
-    for (auto& peer : g_internet) {
-      if (peer.when_ns < slot->when_ns) slot = &peer;
-    }
-  }
+  if (!slot) slot = Oldest();
   if (fresh) {
-    REXSYS_INFO("[online] heard {}.{}.{}.{} from port {} on title port {}{}", ip >> 24, (ip >> 16) & 0xFF,
-                (ip >> 8) & 0xFF, ip & 0xFF, host_port, guest,
+    REXSYS_INFO("[online] heard {} from port {} on title port {}{}{}", Dotted(ip), host_port, guest,
+                title != ip ? " as " + Dotted(title) : std::string(),
                 rewritten ? " (a NAT rewrote the source port; replies go back to it)" : "");
   }
   slot->ip = ip;
+  slot->title_ip = title;
+  if (console) slot->console = console;
   slot->guest_port = guest;
   slot->host_port = host_port;
   slot->when_ns = now;
   slot->heard = true;
-  return guest;
+  if (title_ip) *title_ip = title;
+  if (title_port) *title_port = guest;
+  return true;
 }
 
-// The port to send to for a console on the internet's title port: where it was last heard from, or the moved port.
-uint16_t InternetHostPort(uint32_t ip, uint16_t guest_port) {
+// Where to send for the console the title knows as title_ip, on the title's port: its public address and the port it
+// was last heard from (or that the relay gave), or the moved port.
+void InternetRoute(uint32_t title_ip, uint16_t guest_port, uint32_t* ip, uint16_t* port) {
   std::lock_guard lock(g_internet_mutex);
-  for (const auto& peer : g_internet) {
-    if (peer.ip == ip && peer.guest_port == guest_port && peer.when_ns) return peer.host_port;
+  if (const InternetPeer* peer = FindTitle(title_ip, guest_port)) {
+    *ip = peer->ip;
+    *port = peer->host_port;
+    return;
   }
-  return HostPort(guest_port);
+  *ip = title_ip;
+  for (const auto& named : g_named) {
+    if (named.console && named.title_ip == title_ip) *ip = named.ip;
+  }
+  *port = HostPort(guest_port);
+}
+
+uint16_t InternetHostPort(uint32_t title_ip, uint16_t guest_port) {
+  uint32_t ip = 0;
+  uint16_t port = 0;
+  InternetRoute(title_ip, guest_port, &ip, &port);
+  return port;
+}
+
+// The address the title knows the sender of a datagram from ip:host_port by (for what the side socket delivers).
+uint32_t TitleSource(uint32_t ip, uint16_t host_port) {
+  std::lock_guard lock(g_internet_mutex);
+  if (const NamedEndpoint* named = FindNamedEndpoint(ip, host_port)) return TitleIpFor(ip, named->console);
+  const InternetPeer* known = FindEndpoint(ip, host_port);
+  return known ? known->title_ip : ip;
+}
+
+// A punch: the 8-byte magic, then the sender's relay session (online_relay.cpp).
+uint64_t PunchSession(const uint8_t* punch) {
+  uint64_t session = 0;
+  for (int i = 0; i < 8; ++i) session = session << 8 | punch[8 + i];
+  return session;
 }
 
 // A datagram the online relay took on a title socket or the side socket (a punch): its sender is a console on the
 // internet like any other.
-void NoteRelayDatagram(uint32_t ip, uint16_t host_port, uint16_t bound_guest_port) {
-  if (online::PublicAddress() && !OnLan(ip) && !IsSelf(ip)) NoteInternetPeer(ip, host_port, bound_guest_port);
+void NoteRelayDatagram(uint32_t ip, uint16_t host_port, uint16_t bound_guest_port, const uint8_t* punch) {
+  if (online::PublicAddress() && !OnLan(ip) && !IsSelf(ip)) {
+    NoteInternetPeer(ip, host_port, bound_guest_port, PunchSession(punch), nullptr, nullptr);
+  }
 }
 
 // Where a broadcast to the title's guest_port also goes while online: each console on the internet heard on that
@@ -431,7 +611,9 @@ std::vector<std::pair<uint32_t, uint16_t>> InternetCopies(uint16_t guest_port) {
   {
     std::lock_guard lock(g_internet_mutex);
     for (const auto& peer : g_internet) {
-      if (peer.guest_port == guest_port && peer.when_ns && now - peer.when_ns < 15'000'000'000ll) {
+      if (peer.guest_port == guest_port && peer.when_ns && now - peer.when_ns < 15'000'000'000ll &&
+          std::none_of(copies.begin(), copies.end(),
+                       [&](const auto& c) { return c.first == peer.ip && c.second == peer.host_port; })) {
         copies.push_back({peer.ip, peer.host_port});
       }
     }
@@ -458,38 +640,51 @@ void TraceInternet(const char* what, uint32_t ip, uint16_t port, uint16_t guest_
 }
 }  // namespace
 
-void SeedInternetPeer(uint32_t ip, uint16_t guest_port, uint16_t host_port) {
+void SeedInternetPeer(uint32_t ip, uint16_t guest_port, uint16_t host_port, uint64_t console) {
   if (!ip || !host_port) return;
   const int64_t now = SteadyNs();
   std::lock_guard lock(g_internet_mutex);
-  InternetPeer* slot = nullptr;
-  for (auto& peer : g_internet) {
-    if (peer.ip == ip && peer.guest_port == guest_port) slot = &peer;
-  }
-  if (slot && slot->heard) return;  // the port it really sends from wins
-  if (!slot) {
-    slot = &g_internet[0];
-    for (auto& peer : g_internet) {
-      if (peer.when_ns < slot->when_ns) slot = &peer;
+  const uint32_t title = TitleIpFor(ip, console);
+  if (console) {
+    NamedEndpoint* named = nullptr;
+    for (auto& entry : g_endpoints) {
+      if (entry.ip == ip && entry.host_port == host_port) named = &entry;
     }
+    if (!named) named = &g_endpoints[g_endpoints_next++ % g_endpoints.size()];
+    *named = {ip, host_port, guest_port, console};
+    // Datagrams heard from this endpoint before the relay said whose it is were this console's.
+    for (auto& peer : g_internet) {
+      if (peer.when_ns && peer.ip == ip && peer.host_port == host_port && peer.console != console) {
+        peer.console = console;
+        peer.title_ip = title;
+        peer.guest_port = guest_port;
+      }
+    }
+  }
+  InternetPeer* slot = FindTitle(title, guest_port);
+  // The port it really sends from wins over the relay's word, unless that was another console's.
+  if (slot && slot->heard && (slot->host_port == host_port || slot->console == console)) return;
+  if (!slot) {
+    slot = Oldest();
     if (REXCVAR_GET(net_online_trace)) {
-      REXSYS_INFO("[online] {}.{}.{}.{} reaches title port {} at port {} (from the relay)", ip >> 24, (ip >> 16) & 0xFF,
-                  (ip >> 8) & 0xFF, ip & 0xFF, guest_port, host_port);
+      REXSYS_INFO("[online] {} reaches title port {} at port {} (from the relay){}", Dotted(ip), guest_port, host_port,
+                  title != ip ? ", known to the game as " + Dotted(title) : std::string());
     }
   }
   slot->ip = ip;
+  slot->title_ip = title;
+  slot->console = console;
   slot->guest_port = guest_port;
   slot->host_port = host_port;
   slot->when_ns = now;
   slot->heard = false;
 }
 
-bool HeardInternetPeer(uint32_t ip, uint16_t* guest_port, uint16_t* host_port) {
+bool HeardInternetPeer(uint32_t ip, uint16_t host_port, uint16_t* guest_port) {
   std::lock_guard lock(g_internet_mutex);
   for (const auto& peer : g_internet) {
-    if (peer.ip != ip || !peer.heard || !peer.when_ns) continue;
+    if (!peer.when_ns || !peer.heard || peer.ip != ip || peer.host_port != host_port) continue;
     if (guest_port) *guest_port = peer.guest_port;
-    if (host_port) *host_port = peer.host_port;
     return true;
   }
   return false;
@@ -498,6 +693,72 @@ bool HeardInternetPeer(uint32_t ip, uint16_t* guest_port, uint16_t* host_port) {
 void ForgetInternetPeers() {
   std::lock_guard lock(g_internet_mutex);
   g_internet = {};
+  g_named = {};
+  g_named_next = 0;
+  g_endpoints = {};
+  g_endpoints_next = 0;
+  g_lan_peers = {};
+  g_lan_peers_next = 0;
+}
+
+void NameConsoleLan(uint32_t ip, uint64_t console, uint32_t lan_ip) {
+  if (!ip || !console) return;
+  std::lock_guard lock(g_internet_mutex);
+  NamedConsole& named = NameConsole(ip, console);
+  named.lan_ip = lan_ip;
+  named.tagged = true;
+}
+
+void MakeOwnXnAddr(uint32_t ip, uint8_t* xnaddr) {
+  MakeXnAddr(ip, xnaddr);
+  const uint64_t console = online::relay::TagSession();
+  uint32_t lan = 0;
+  if (console && ip && ip == online::PublicAddress() && LanAddress(&lan)) WriteTag(xnaddr, console, lan);
+}
+
+void MakeTitleXnAddr(uint32_t ip, uint8_t* xnaddr) {
+  std::lock_guard lock(g_internet_mutex);
+  for (const auto& named : g_named) {
+    if (named.console && named.tagged && named.title_ip == ip) {
+      MakeXnAddr(named.ip, xnaddr);
+      WriteTag(xnaddr, named.console, named.lan_ip);
+      return;
+    }
+  }
+  for (const auto& peer : g_lan_peers) {
+    if (peer.console && peer.lan_ip == ip) {
+      MakeXnAddr(peer.ip, xnaddr);
+      WriteTag(xnaddr, peer.console, peer.lan_ip);
+      return;
+    }
+  }
+  MakeXnAddr(ip, xnaddr);
+}
+
+uint32_t XnAddrToTitleIp(const uint8_t* xnaddr) {
+  const uint32_t ina = uint32_t(xnaddr[0]) << 24 | uint32_t(xnaddr[1]) << 16 | uint32_t(xnaddr[2]) << 8 | xnaddr[3];
+  uint64_t console = 0;
+  uint32_t lan = 0;
+  if (!ReadTag(xnaddr, &console, &lan) || console == online::relay::TagSession()) return ina;
+  const uint32_t public_ip = online::PublicAddress();
+  std::lock_guard lock(g_internet_mutex);
+  if (public_ip && ina == public_ip) {
+    // Another console behind this one's router: the internet cannot loop back to it, the LAN reaches it.
+    LanPeer* slot = nullptr;
+    for (auto& peer : g_lan_peers) {
+      if (peer.console == console) slot = &peer;
+    }
+    if (!slot) {
+      slot = &g_lan_peers[g_lan_peers_next++ % g_lan_peers.size()];
+      REXSYS_INFO("[online] a console behind this one's own public address: reached on the LAN at {}", Dotted(lan));
+    }
+    *slot = {lan, ina, console};
+    return lan ? lan : kStandInBase | 0xFE;
+  }
+  NamedConsole& named = NameConsole(ina, console);
+  named.lan_ip = lan;
+  named.tagged = true;
+  return named.title_ip;
 }
 
 namespace {
@@ -563,11 +824,14 @@ int SideRead(SideState& side, void* data, uint32_t capacity, uint32_t* ip, uint1
     const online::Datagram kind =
         online::Classify(side.port, source, source_port, reinterpret_cast<const uint8_t*>(data), got);
     if (kind == online::Datagram::kTitle) {
-      if (ip) *ip = source;
+      const bool internet = online::PublicAddress() && !OnLan(source) && !IsSelf(source);
+      if (ip) *ip = internet ? TitleSource(source, source_port) : source;
       if (port) *port = source_port;
       return got;
     }
-    if (kind == online::Datagram::kPunch) NoteRelayDatagram(source, source_port, GuestPort(side.port));
+    if (kind == online::Datagram::kPunch) {
+      NoteRelayDatagram(source, source_port, GuestPort(side.port), reinterpret_cast<const uint8_t*>(data));
+    }
   }
   return -1;
 }
@@ -669,7 +933,7 @@ void CloseSideSocket(int64_t socket) {
 int SideSend(int64_t socket, uint32_t ip, uint16_t port, const void* data, uint32_t size) {
   if (socket < 0) return -1;
   if (online::PublicAddress() && ip != 0xFFFFFFFFu && !OnLan(ip) && !IsSelf(ip)) {
-    port = InternetHostPort(ip, GuestPort(port));
+    InternetRoute(ip, GuestPort(port), &ip, &port);
   }
   sockaddr_in to{};
   to.sin_family = AF_INET;
@@ -957,10 +1221,15 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADD
   sockaddr_in nfrom;
   socklen_t nfromlen = sizeof(sockaddr_in);
   int ret = -1;
+  bool internet = false;  // from a console on the internet: the title is told title_source:title_port
+  uint32_t title_source = 0;
+  uint16_t title_port = 0;
   // Online play's relay sends STUN requests and punches from the title's moved ports (online_relay.h); their datagrams
-  // are taken here and the title never sees them. The next datagram is read in their place: on a non-blocking socket
+  // are taken here and the title never sees them, and so is a datagram from a console behind a shared address that
+  // the relay has not named yet (NoteInternetPeer). The next datagram is read in their place: on a non-blocking socket
   // that ends in "would block" as usual, a blocking one waits on as the title asked.
   for (int taken = 0;; ++taken) {
+    internet = false;
     std::memset(&nfrom, 0, sizeof(nfrom));
     nfromlen = sizeof(sockaddr_in);
 #if REX_PLATFORM_SWITCH
@@ -985,6 +1254,15 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADD
       kind = online::Classify(system_link::HostPort(bound_port_), ntohl(nfrom.sin_addr.s_addr), ntohs(nfrom.sin_port),
                               received, ret);
     }
+    if (kind == online::Datagram::kTitle && ret > 0 && online::PublicAddress()) {
+      const uint32_t source = ntohl(nfrom.sin_addr.s_addr);
+      internet = !system_link::OnLan(source) && !system_link::IsSelf(source);
+      if (internet && !system_link::NoteInternetPeer(source, ntohs(nfrom.sin_port), bound_port_, 0, &title_source,
+                                                     &title_port)) {
+        internet = false;
+        kind = online::Datagram::kStun;  // dropped, as the relay's own are
+      }
+    }
     if (kind == online::Datagram::kTitle) {
 #if REX_PLATFORM_SWITCH
       if (ret > 0) {
@@ -995,7 +1273,7 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADD
       break;
     }
     if (kind == online::Datagram::kPunch) {
-      system_link::NoteRelayDatagram(ntohl(nfrom.sin_addr.s_addr), ntohs(nfrom.sin_port), bound_port_);
+      system_link::NoteRelayDatagram(ntohl(nfrom.sin_addr.s_addr), ntohs(nfrom.sin_port), bound_port_, received);
     }
     if (flags & 0x2) {  // MSG_PEEK left it waiting: read it for real to drop it
       char scratch[64];
@@ -1016,17 +1294,19 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADD
     }
   }
   if (from) {
-    from->sin_family = nfrom.sin_family;
-    from->sin_addr = ntohl(nfrom.sin_addr.s_addr);  // BE <- BE
-    from->sin_port = system_link::GuestPort(ntohs(nfrom.sin_port));
     const uint32_t source = ntohl(nfrom.sin_addr.s_addr);
-    if (ret > 0 && online::PublicAddress() && !system_link::OnLan(source) && !system_link::IsSelf(source)) {
-      from->sin_port = system_link::NoteInternetPeer(source, ntohs(nfrom.sin_port), bound_port_);
+    uint32_t reported = source;
+    from->sin_family = nfrom.sin_family;
+    from->sin_port = system_link::GuestPort(ntohs(nfrom.sin_port));
+    if (ret > 0 && internet) {
+      reported = title_source;
+      from->sin_port = title_port;
       system_link::TraceInternet("received from", source, ntohs(nfrom.sin_port), from->sin_port, buf, ret);
     }
+    from->sin_addr = reported;  // BE <- BE
     if (ret > 0) {
-      system_link::TraceReceive(ntohl(nfrom.sin_addr.s_addr), from->sin_port, ret);
-      system_link::NotePeer(ntohl(nfrom.sin_addr.s_addr), from->sin_port);
+      system_link::TraceReceive(reported, from->sin_port, ret);
+      system_link::NotePeer(reported, from->sin_port);
     }
     std::memset(from->x_sin_zero, 0, sizeof(from->x_sin_zero));
   }
@@ -1099,7 +1379,11 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_
     // Online: a console on the internet gets the datagram at the port it was last heard from.
     if (online::PublicAddress() && !IsBroadcast(address) && !system_link::OnLan(address) &&
         !system_link::IsSelf(address)) {
-      nto.sin_port = htons(system_link::InternetHostPort(address, to->sin_port));
+      uint32_t route_ip = address;
+      uint16_t route_port = 0;
+      system_link::InternetRoute(address, to->sin_port, &route_ip, &route_port);
+      nto.sin_addr.s_addr = htonl(route_ip);
+      nto.sin_port = htons(route_port);
     }
 #if REX_PLATFORM_SWITCH
     nto.sin_len = sizeof(nto);

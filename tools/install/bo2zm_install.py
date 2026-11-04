@@ -60,7 +60,7 @@ ANY_LANGUAGE = re.compile(r"^(en|bp|fj|fr|ge|it|ja|ms|po|ru|sp)_")
 BOTS_PACK = "bo2zm_bots.gscpack"
 # The most shaders one library holds: the packer and the game's loader both refuse more
 # (kMaxShaders in app/src/native/render/bo2zm_shader_library.cpp).
-MAX_SHADERS = 32768
+MAX_SHADERS = 65536
 
 # What the source copy leaves out: a checkout's git-ignored folders and its top-level dot folders (a kit has none).
 SKIP_DIRS = {"out", "work", "refs", "data", os.path.join("app", "out"), os.path.join("app", "generated"),
@@ -334,6 +334,24 @@ class Runner:
             tail = open(self.log_path, encoding="utf-8", errors="replace").read().splitlines()[-25:]
             fail(f"{os.path.basename(str(args[0]))} failed (exit {proc.returncode}). The end of "
                  f"{self.log_path}:\n" + "\n".join("    " + t for t in tail))
+
+    def run_parallel(self, commands, workers):
+        """Runs independent commands, up to `workers` at once; each one's output goes to the log in order, after all
+        have ended. Stops at the first that failed, as run does."""
+        def one(args):
+            proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                  errors="replace")
+            return args, proc.returncode, proc.stdout
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            results = list(pool.map(one, commands))
+        with open(self.log_path, "a", encoding="utf-8", errors="replace") as log:
+            for args, _, output in results:
+                log.write(f"\n$ {' '.join(map(str, args))}\n{output}")
+        for args, code, output in results:
+            if code != 0:
+                tail = output.splitlines()[-25:]
+                fail(f"{os.path.basename(str(args[0]))} failed (exit {code}). The end of its output:\n" +
+                     "\n".join("    " + t for t in tail))
 
 
 # --- The steps -------------------------------------------------------------------------------------------------------
@@ -645,11 +663,15 @@ class Installer:
             shutil.rmtree(d, ignore_errors=True)
             os.makedirs(d)
         zones = self.zone_files(program)
-        say(f"  extracting the shaders of {len(zones)} zones")
-        # In batches, so the command line stays well under Windows' 32,767 characters with long paths.
-        for i in range(0, len(zones), 40):
-            run.run([sys.executable, "-I", os.path.join(self.src, "tools", "inspect", "ff_shaders.py"),
-                     *zones[i:i + 40], "--dump", "--out", zones_dir, "--xex-image", image], quiet=True)
+        # Each zone is decompressed and searched on one core, so several run at once (half the cores, at most 8: each
+        # holds a zone in memory). In batches of at most 40, so the command line stays well under Windows' 32,767
+        # characters with long paths.
+        workers = max(1, min(8, (os.cpu_count() or 2) // 2))
+        say(f"  extracting the shaders of {len(zones)} zones ({workers} at a time)")
+        size = max(1, min(40, -(-len(zones) // (workers * 3))))
+        run.run_parallel([[sys.executable, "-I", os.path.join(self.src, "tools", "inspect", "ff_shaders.py"),
+                           *zones[i:i + size], "--dump", "--out", zones_dir, "--xex-image", image]
+                          for i in range(0, len(zones), size)], workers)
         # The blobs are named by content, so one folder of them all is the set without duplicates.
         for d in os.listdir(zones_dir):
             path = os.path.join(zones_dir, d)
@@ -906,10 +928,33 @@ class Installer:
 
     # --- Driver ------------------------------------------------------------------------------------------------
 
+    def tool_signature(self):
+        """The tool's own scripts (their contents) and host tools (their sizes): a newer tool unpacked over an older one,
+        or next to its work folder, copies its scripts again, and the steps after run again with them."""
+        h = hashlib.sha256()
+        for root, by_content in ((self.source, True), (self.host(), False)):
+            if not os.path.isdir(root):
+                continue
+            for dp, dns, fns in os.walk(root):
+                dns.sort()
+                for n in sorted(fns):
+                    path = os.path.join(dp, n)
+                    rel = os.path.relpath(path, root).replace(os.sep, "/")
+                    if rel.startswith("__pycache__/") or "/__pycache__/" in rel:
+                        continue
+                    h.update(rel.encode() + b"\0")
+                    if by_content:
+                        with open(path, "rb") as f:
+                            h.update(hashlib.sha256(f.read()).digest())
+                    else:
+                        h.update(str(os.path.getsize(path)).encode())
+        return h.hexdigest()[:16]
+
     def options(self):
         """What each step's result depends on besides its inputs: a step done with other values runs again."""
         dlc = sorted(p.file_name for p in self.packages) if self.found else None
-        return {"game": [sorted(self.modes), dlc],
+        return {"source": [self.tool_signature()],
+                "game": [sorted(self.modes), dlc],
                 "decrypt": [self.main_program(), self.campaign()],
                 "shaders": [sorted({"zm", "mp"} & set(self.modes))],
                 "build-switch": [self.lto(), bool(self.args.pgo)],

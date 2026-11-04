@@ -3086,8 +3086,13 @@ end
 
 -- PrivateLocalGameLobby is the System Link lobby: Multiplayer opens it from SYSTEM LINK's create button
 -- (CoD.MainMenu.OpenSystemLinkLobby), Zombies once the host has picked a map and start location
--- (CoD.SelectStartLocZombie in ui_mp/t6/zombie/selectstartloczombie.lua, when SessionMode_IsSystemlinkGame). It is not
--- the Local lobby, so it leaves the controllers alone; in Zombies its host gets BOT COUNT.
+-- (CoD.SelectStartLocZombie in ui_mp/t6/zombie/selectstartloczombie.lua, when SessionMode_IsSystemlinkGame); a console
+-- that joins from the server browser gets the same menu. Its other local players join as in the Local lobby: the game's
+-- CoD.LobbyList.UnusedGamepadButton (ui/t6/lobbylist.lua) takes A from a controller no player uses and signs it in
+-- ("signclientin"), in System Link as offline. Outside a lobby the program hides the other controllers' presses (the
+-- front end is player 1's), so the System Link lobby announces itself like the Local one, on the host and on a console
+-- that joined; on the Switch a new controller then brings up the controller screen there too. In Zombies its host also
+-- gets BOT COUNT.
 state.systemLink = function()
   if type(UIExpression.SessionMode_IsSystemlinkGame) == "function" then
     local ok, value = pcall(UIExpression.SessionMode_IsSystemlinkGame)
@@ -3100,10 +3105,33 @@ state.systemLink = function()
   end
   return false
 end
+-- A System Link lobby takes as many players per console as the Local lobby (party_maxlocalplayers_local_splitscreen,
+-- 4). The game allows two: its sign-in (signclientin) and the lobby list's join row and A press
+-- (CoD.LobbyList.Update and UnusedGamepadButton) stop at party_maxlocalplayers, which the game sets from
+-- party_maxlocalplayers_systemlink when the System Link lobby starts, and the Zombies start-location
+-- menu sets that one to its game type's maxLocalPlayers (2) right after it opens this lobby. So the lobby raises both
+-- dvars and its join list's own count (CoD.LobbyList.New keeps it) when it opens and twice a second. The total stays
+-- the game's: the join row goes once the lobby holds party_maxplayers players.
+state.systemLinkPlayers = function(menu)
+  local most = UIExpression.DvarInt(nil, "party_maxlocalplayers_local_splitscreen")
+  if type(most) ~= "number" or most < 2 then return end
+  most = math.min(most, 4)
+  for _, name in ipairs({"party_maxlocalplayers", "party_maxlocalplayers_systemlink"}) do
+    if UIExpression.DvarInt(nil, name) ~= most then Engine.SetDvar(name, most) end
+  end
+  local lists = menu.lobbyPane and menu.lobbyPane.body and menu.lobbyPane.body.lobbyList
+  for _, list in ipairs(lists and lists.playerLists or {}) do
+    if list.addSplitscreenRow and list.maxLocalPlayers ~= most then list.maxLocalPlayers = most end
+  end
+end
 state.systemLinkLobby = function(menu, controller)
   if not state.systemLink() then
     return state.localLobby(menu, controller)
   end
+  Safely(state.localLobby, menu, controller)
+  Safely(state.systemLinkPlayers, menu)
+  menu:addElement(LUI.UITimer.new(500, "bo2zm_local_players", false))
+  menu:registerEventHandler("bo2zm_local_players", Protect(state.systemLinkPlayers))
   ClearStartMatchHint(menu.buttonPane)
   PatchBotsLobby(menu, controller, true)
   Safely(state.onlineLobby, menu)

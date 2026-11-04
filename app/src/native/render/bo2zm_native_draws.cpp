@@ -650,6 +650,31 @@ REXCVAR_DEFINE_BOOL(bo2zm_native_test_async_all, false, "BO2",
                     "compile thread, those in the driver's cache too, as on a console that never compiled them (the "
                     "draws wait a frame or more). false = only those that need compiling")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// A map's first visit asks for ~200 pipelines in the match's first frame, and the compile thread used to take them in
+// the order the frame asked: the scene's models first, then the post-processing chain and last the full-screen quad
+// that copies the scene into the output image. With nothing to copy the scene, the screen stayed black but for the
+// HUD (its pipelines come from the menus) for as long as the whole batch took, about a minute at a console's pace, and
+// the world then appeared at once. The passes without a depth target (post-processing, the
+// output copy, the HUD) need fewer than ten pipelines; compiled first, the picture is there in a few seconds and the
+// models come in around it.
+REXCVAR_DEFINE_INT32(bo2zm_native_compile_first, 1, "BO2",
+                     "Native renderer, with bo2zm_native_async_pipelines: which pipelines go ahead in the compile "
+                     "thread's queue (bits): 1 = draws in a pass without a depth target (post-processing, the copy of "
+                     "the scene to the screen, the HUD), 2 = draws into a target 1280 or more wide, 4 = draws of 6 "
+                     "indices or fewer, 8 = draws into targets narrower than 640. 0 = in the order the frame asks for "
+                     "them")
+    .range(0, 15)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(bo2zm_native_test_compile_delay_ms, 0, "BO2",
+                     "Test helper, with bo2zm_native_async_pipelines: the compile thread waits this long after each "
+                     "pipeline it compiles with a shader it has not compiled before, so a fast PC compiles at a "
+                     "console's pace (300-500 ms each on a first visit; with bo2zm_native_test_async_all the others "
+                     "pass at once, as the console's driver answers them from the shaders it keeps). 0 = no wait")
+    .range(0, 5000);
+REXCVAR_DEFINE_BOOL(bo2zm_native_test_compile_log, false, "BO2",
+                    "Test helper, with bo2zm_native_async_pipelines: a log line for each pipeline sent to the compile "
+                    "thread (its pass, target, draw size and place in the queue) and for each one collected (how long "
+                    "it waited and how many draws were skipped meanwhile)");
 // Saving the pipeline file (~43 MB) during a match. On the OLED, a 390 ms frame and eight more of
 // 107-323 ms fell inside the 2.2 s of one such write, which rewrote the whole cache because the prewarm list had one
 // new record. Saving from the writer thread (mode 1) still stopped the ring for 0.5-1 s on a Switch Lite (frames of
@@ -15005,9 +15030,16 @@ class VulkanDrawsImpl final : public VulkanDraws {
       return VK_NULL_HANDLE;
     }
     // Compiling on the compile thread (see CompilePipelinesLoop): this draw is skipped.
-    if (!compile_pending_.empty() && compile_pending_.count(hash)) {
-      ++draws_waiting_pipeline_;
-      return VK_NULL_HANDLE;
+    if (!compile_pending_.empty()) {
+      if (const auto pending = compile_pending_.find(hash); pending != compile_pending_.end()) {
+        ++pending->second.skipped;
+        ++draws_waiting_pipeline_;
+        if (!pending->second.first && compile_first_ && CompileFirst(p)) {
+          pending->second.first = true;
+          PromoteCompile(hash);
+        }
+        return VK_NULL_HANDLE;
+      }
     }
     const VkShaderModule vs = ModuleOf(*p.vs);
     VkShaderModule ps = VK_NULL_HANDLE;
@@ -15042,7 +15074,7 @@ class VulkanDrawsImpl final : public VulkanDraws {
                     : CreatePipelineVulkan(key, input, vs, ps, pass_rp_, true, pipeline, n_colors,
                                            VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
       if (created == VK_PIPELINE_COMPILE_REQUIRED) {
-        QueueCompile(hash, key, input, vs, ps, p.vs, key.ps ? p.ps : nullptr);
+        QueueCompile(hash, key, input, vs, ps, p);
         ++draws_waiting_pipeline_;
         return VK_NULL_HANDLE;
       }
@@ -15848,6 +15880,12 @@ class VulkanDrawsImpl final : public VulkanDraws {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkResult result = VK_SUCCESS;
     uint64_t ns = 0;
+    bool first = false;  // bo2zm_native_compile_first: ahead of the others
+    // bo2zm_native_test_compile_log: what asked for it, for the log line when it is collected.
+    uint32_t id = 0;
+    uint32_t category = 0;
+    uint64_t frame = 0;
+    std::chrono::steady_clock::time_point queued{};
   };
 
   bool AsyncCompiles() {
@@ -15860,12 +15898,17 @@ class VulkanDrawsImpl final : public VulkanDraws {
                   async_compiles_ ? "YES" : "no",
                   vulkan_device_->properties().pipelineCreationCacheControl ? ""
                                                                              : " (the driver lacks pipelineCreationCacheControl)");
+      compile_first_ = uint32_t(REXCVAR_GET(bo2zm_native_compile_first));
+      if (async_compiles_) {
+        REXLOG_INFO("[native] C6 pipelines that go ahead in the compile queue (bo2zm_native_compile_first): {}",
+                    compile_first_ ? fmt::format("{:X}", compile_first_) : std::string("none"));
+      }
     }
     return async_compiles_ > 0;
   }
 
   void QueueCompile(uint64_t hash, const PipelineKey& key, const VertexInput& input, VkShaderModule vs,
-                    VkShaderModule ps, const ShaderInput* vs_input, const ShaderInput* ps_input) {
+                    VkShaderModule ps, const DrawRequest& p) {
     CompileJob job;
     job.hash = hash;
     job.key = key;
@@ -15873,17 +15916,32 @@ class VulkanDrawsImpl final : public VulkanDraws {
     job.vs = vs;
     job.ps = ps;
     job.pass = pass_rp_;
-    job.vs_input = vs_input;
-    job.ps_input = ps_input;
-    compile_pending_.insert(hash);
-    {
-      std::lock_guard<std::mutex> lock(compile_mutex_);
-      compile_queue_.push_back(std::move(job));
-    }
+    job.vs_input = p.vs;
+    job.ps_input = key.ps ? p.ps : nullptr;
+    job.id = ++compile_ids_;
+    job.category = category_pass_;
+    job.frame = frame_;
+    job.queued = std::chrono::steady_clock::now();
+    job.first = compile_first_ && CompileFirst(p);
+    compile_pending_.emplace(hash, PendingCompile{0, job.first});
+    static const bool log = REXCVAR_GET(bo2zm_native_test_compile_log);
     size_t waiting = 0;
+    size_t place = 0;
     {
       std::lock_guard<std::mutex> lock(compile_mutex_);
+      if (job.first) {  // behind the others that go first, ahead of the rest
+        place = size_t(std::find_if(compile_queue_.begin(), compile_queue_.end(),
+                                    [](const CompileJob& queued) { return !queued.first; }) -
+                       compile_queue_.begin());
+        compile_queue_.insert(compile_queue_.begin() + ptrdiff_t(place), std::move(job));
+      } else {
+        place = compile_queue_.size();
+        compile_queue_.push_back(std::move(job));
+      }
       waiting = compile_queue_.size();
+    }
+    if (log) {
+      LogCompileQueued(compile_ids_, key, p, place);
     }
     // The helper, the first time two or more wait (bo2zm_native_compile_threads).
     if (waiting >= 2 && compile_thread_.joinable() && !compile_helper_.joinable() &&
@@ -15916,6 +15974,53 @@ class VulkanDrawsImpl final : public VulkanDraws {
     compile_cv_.notify_all();  // the helper's wake-up test differs from the first thread's
   }
 
+  /*
+   * bo2zm_native_compile_first (see the cvar): whether this draw's pipeline goes ahead of the others in the compile
+   * queue. Its bits are compile_first_. Called only for a draw whose pipeline is compiling or about to, so normal
+   * play, with everything compiled, never gets here.
+   */
+  bool CompileFirst(const DrawRequest& p) const {
+    const uint32_t* r = p.registers;
+    const uint32_t pitch = r[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF;
+    return ((compile_first_ & 1) && !pass_formats_[4]) || ((compile_first_ & 2) && pitch >= 1280) ||
+           ((compile_first_ & 4) && (r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR] >> 16) <= 6) ||
+           ((compile_first_ & 8) && pitch < 640);
+  }
+
+  // A queued pipeline that a draw CompileFirst says yes to now asks for: it moves up behind the others that go first
+  // (it may already be compiling, or done and not collected yet: then nothing moves).
+  void PromoteCompile(uint64_t hash) {
+    std::lock_guard<std::mutex> lock(compile_mutex_);
+    const auto it = std::find_if(compile_queue_.begin(), compile_queue_.end(),
+                                 [hash](const CompileJob& queued) { return queued.hash == hash; });
+    if (it == compile_queue_.end()) {
+      return;
+    }
+    CompileJob job = std::move(*it);
+    compile_queue_.erase(it);
+    job.first = true;
+    const auto place = std::find_if(compile_queue_.begin(), compile_queue_.end(),
+                                    [](const CompileJob& queued) { return !queued.first; });
+    compile_queue_.insert(place, std::move(job));
+    ++compiles_promoted_;
+  }
+
+  // bo2zm_native_test_compile_log: the draw that sent a pipeline to the compile thread. Category is the pass's
+  // (TargetCategory), base the first color target's EDRAM tile, count the draw's index count.
+  void LogCompileQueued(uint32_t id, const PipelineKey& key, const DrawRequest& p, size_t place) {
+    const uint32_t* r = p.registers;
+    const uint32_t initiator = r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR];
+    const float scale_x = Float(r[gr::XE_GPU_REG_PA_CL_VPORT_XSCALE]);
+    const float scale_y = Float(r[gr::XE_GPU_REG_PA_CL_VPORT_YSCALE]);
+    REXLOG_INFO("[native] C6 compile queued #{} (frame {}, {} ahead): category {} pass {}x{} pitch {} color base "
+                "{:03X} depth {}, VS n{} PS n{}, type {} count {}, viewport {:.0f}x{:.0f}, blend {:08X} depth {:08X}",
+                id, frame_, place, category_pass_, pass_width_, pass_height_,
+                r[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF, r[gr::XE_GPU_REG_RB_COLOR_INFO] & 0xFFF,
+                pass_formats_[4] ? "yes" : "no", p.vs->number, key.ps && p.ps ? int(p.ps->number) : -1,
+                initiator & 0x3F, initiator >> 16, std::fabs(scale_x) * 2.0f, std::fabs(scale_y) * 2.0f,
+                key.blend[0], key.depth);
+  }
+
   // helper: the second thread (bo2zm_native_compile_threads), which only takes a job outside a match and while
   // another one waits behind it, so the first thread always has one.
   void CompilePipelinesLoop(bool helper) {
@@ -15944,6 +16049,18 @@ class VulkanDrawsImpl final : public VulkanDraws {
                                           n_colors);  // false: no warnings from this thread, as the prewarm
       job.ns = uint64_t(
           std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+      if (const int32_t delay = REXCVAR_GET(bo2zm_native_test_compile_delay_ms); delay > 0) {
+        // A console's pace (test helper), for a pipeline with a shader not compiled before: Mesa keeps the
+        // shaders it compiled, so on the console the others come back from the ring at once.
+        lock.lock();
+        const bool vs_new = compile_modules_seen_.insert(job.vs).second;
+        const bool ps_new = job.ps != VK_NULL_HANDLE && compile_modules_seen_.insert(job.ps).second;
+        lock.unlock();
+        if (vs_new || ps_new) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+        }
+      }
+      bo2zm::preset::NoteFirstVisitCompile();  // a map's first visit: the banner, and the game held (bo2zm_cheats)
       lock.lock();
       compile_done_.push_back(std::move(job));
       compiles_ready_.store(true, std::memory_order_release);
@@ -15983,7 +16100,20 @@ class VulkanDrawsImpl final : public VulkanDraws {
       done.swap(compile_done_);
       compiles_ready_.store(false, std::memory_order_relaxed);
     }
+    static const bool log = REXCVAR_GET(bo2zm_native_test_compile_log);
     for (CompileJob& job : done) {
+      if (log) {
+        const auto pending = compile_pending_.find(job.hash);
+        REXLOG_INFO("[native] C6 compile collected #{} (queued in frame {}, category {}{}): {:.0f} ms after it "
+                    "was queued ({:.0f} ms compiling), {} draws skipped meanwhile; {} still pending",
+                    job.id, job.frame, job.category, job.first ? ", first" : "",
+                    double(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                 job.queued)
+                               .count()) /
+                        1e3,
+                    double(job.ns) / 1e6, pending != compile_pending_.end() ? pending->second.skipped : 0u,
+                    compile_pending_.size() - 1);
+      }
       compile_pending_.erase(job.hash);
       if (job.result != VK_SUCCESS) {
         Reject(53, "could not create a pipeline");
@@ -15992,6 +16122,7 @@ class VulkanDrawsImpl final : public VulkanDraws {
         ++pipelines_no_save_;
       }
       ++compiles_async_;
+      compiles_first_ += job.first ? 1 : 0;
       ns_compiles_async_ += job.ns;
       compile_ns_worst_ = std::max(compile_ns_worst_, job.ns);
       ns_pipelines_ += job.ns;
@@ -16019,9 +16150,10 @@ class VulkanDrawsImpl final : public VulkanDraws {
     const uint32_t helper = compiles_helper_.load(std::memory_order_relaxed);
     BO2ZM_REPORT_RING("[native] C6 pipelines compiled on a thread, last 10 s: {} ({:.1f} ms on average, worst "
                       "{:.1f} ms; {} by the second thread), {} still compiling; {} draws skipped while their pipeline "
-                      "compiled",
+                      "compiled; ahead of the queue {} ({} moved up; since start)",
                       compiled, compiled ? double(ns) / 1e6 / double(compiled) : 0.0, double(compile_ns_worst_) / 1e6,
-                      helper - compiles_helper_reported_, compile_pending_.size(), waited);
+                      helper - compiles_helper_reported_, compile_pending_.size(), waited, compiles_first_,
+                      compiles_promoted_);
     compiles_helper_reported_ = helper;
     compile_ns_worst_ = 0;
   }
@@ -17381,7 +17513,15 @@ class VulkanDrawsImpl final : public VulkanDraws {
   // Pipelines compiled on a thread (CompilePipelinesLoop). compile_pending_ is the ring's; the queues are under
   // compile_mutex_.
   int32_t async_compiles_ = -1;  // -1 = not decided yet
-  std::unordered_set<uint64_t> compile_pending_;
+  struct PendingCompile {
+    uint32_t skipped = 0;  // draws skipped while it compiles
+    bool first = false;    // bo2zm_native_compile_first
+  };
+  std::unordered_map<uint64_t, PendingCompile> compile_pending_;
+  uint32_t compile_first_ = 0;  // bo2zm_native_compile_first, read when the renderer starts
+  uint64_t compiles_promoted_ = 0, compiles_first_ = 0;
+  uint32_t compile_ids_ = 0;  // bo2zm_native_test_compile_log
+  std::unordered_set<VkShaderModule> compile_modules_seen_;  // bo2zm_native_test_compile_delay_ms, under compile_mutex_
   std::mutex compile_mutex_;
   std::condition_variable compile_cv_;
   std::deque<CompileJob> compile_queue_;

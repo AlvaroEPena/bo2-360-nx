@@ -51,7 +51,7 @@ def pack_containers(path):
         if len(header) != 24 or header[:8] != b"BZMSPV\0\0" or struct.unpack_from("<I", header, 8)[0] != 1:
             raise ValueError(f"invalid pack header: {path}")
         count = struct.unpack_from("<I", header, 12)[0]
-        if not 1 <= count <= 32768:
+        if not 1 <= count <= 65536:
             raise ValueError(f"invalid shader count: {path}")
         for _ in range(count):
             lengths = stream.read(16)

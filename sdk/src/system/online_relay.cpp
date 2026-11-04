@@ -224,6 +224,8 @@ struct Control {
 };
 Control g_control;
 std::atomic<uint64_t> g_version{0};
+// This console's session once a broker has taken it (TagSession); 0 otherwise.
+std::atomic<uint64_t> g_tag_session{0};
 
 std::vector<Broker> ConfiguredBrokers() {
   std::vector<Broker> brokers;
@@ -326,6 +328,9 @@ uint64_t Signature(const wire::Message& m) {
 }
 
 // This console's endpoints as known now: STUN's where it answered, the public address and the same port otherwise.
+// A last entry with local port 0 carries its LAN address (consoles behind the same router reach each other there,
+// and the XNADDR tag carries it too: system_link::MakeOwnXnAddr). Consoles that predate it skip an entry without a
+// port.
 wire::Message OwnMessage() {
   wire::Message m;
   m.role = g_session.host ? wire::kHost : wire::kJoiner;
@@ -347,6 +352,13 @@ wire::Message OwnMessage() {
       e.port = e.local_port;
     }
   }
+  uint32_t lan = 0;
+  if (system_link::LanAddress(&lan) && lan && m.count < wire::kMaxEndpoints) {
+    auto& e = m.endpoints[size_t(m.count++)];
+    e.local_port = 0;
+    e.ip = lan;
+    e.port = 0;
+  }
   return m;
 }
 
@@ -355,6 +367,10 @@ std::string EndpointsText(const wire::Message& m) {
   for (int i = 0; i < m.count; ++i) {
     const auto& e = m.endpoints[size_t(i)];
     if (!text.empty()) text += ", ";
+    if (!e.local_port) {
+      text += "LAN " + Ip(e.ip);
+      continue;
+    }
     text += std::to_string(e.local_port) + " -> " + Ip(e.ip) + ":" + std::to_string(e.port) + (e.from_stun ? "" : "?");
   }
   return text;
@@ -387,7 +403,11 @@ const wire::Endpoint* PeerEndpoint(const Peer& p, int index) {
 void Seed(const Peer& p) {
   for (int i = 0; i < p.count; ++i) {
     const auto& e = p.endpoints[size_t(i)];
-    if (e.ip && e.port) system_link::SeedInternetPeer(e.ip, system_link::GuestPort(e.local_port), e.port);
+    if (!e.local_port) {
+      if (p.session && p.ip) system_link::NameConsoleLan(p.ip, p.session, e.ip);
+    } else if (e.ip && e.port) {
+      system_link::SeedInternetPeer(e.ip, system_link::GuestPort(e.local_port), e.port, p.session);
+    }
   }
 }
 
@@ -494,6 +514,7 @@ void Receive(Broker& b) {
       b.failed_last = false;
       REXSYS_INFO("[online] relay: broker {} ({}) connected{}", b.name, Ip(b.ip), b.ever_up ? " again" : "");
       b.ever_up = true;
+      g_tag_session.store(g_session.session, std::memory_order_relaxed);
       Queue(b, mqtt::Subscribe(b.next_id++, g_session.host ? g_session.join_topic : g_session.host_topic));
     } else if (packet.type == mqtt::kPublish) {
       OnPublish(packet, b);
@@ -675,7 +696,8 @@ void TickPeers() {
     if (!p.heard && p.ip) {
       uint16_t guest = 0, from = 0;
       for (int i = 0; i < p.count && !p.heard; ++i) {
-        p.heard = system_link::HeardInternetPeer(p.endpoints[size_t(i)].ip, &guest, &from);
+        from = p.endpoints[size_t(i)].port;
+        p.heard = system_link::HeardInternetPeer(p.endpoints[size_t(i)].ip, from, &guest);
       }
       if (p.heard) {
         REXSYS_INFO("[online] relay: first datagram from {} ({}:{}, title port {}) after {} punch(es)",
@@ -709,6 +731,7 @@ void TickPeers() {
 // ---- Session start and end --------------------------------------------------------------------------------------
 
 void Begin(bool host, uint32_t code_ip, uint32_t public_ip) {
+  g_tag_session.store(0, std::memory_order_relaxed);
   g_session = {};
   g_session.active = true;
   g_session.host = host;
@@ -770,6 +793,7 @@ void End(bool talk) {
     g_tx.clear();
     g_tx_count.store(0, std::memory_order_relaxed);
   }
+  g_tag_session.store(0, std::memory_order_relaxed);
   g_session = {};
 }
 
@@ -945,6 +969,8 @@ Status Current() {
 }
 
 uint64_t Version() { return g_version.load(std::memory_order_relaxed); }
+
+uint64_t TagSession() { return g_tag_session.load(std::memory_order_relaxed); }
 
 }  // namespace relay
 }  // namespace rex::system::online

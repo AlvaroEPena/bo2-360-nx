@@ -29,11 +29,11 @@
 namespace bo2zm::shaderlib {
 namespace {
 constexpr std::array<uint8_t, 8> kSignature{'B','Z','M','S','P','V',0,0};
-// The disc and update zones hold 4,404 shaders (~227 MB of unoptimized SPIR-V);
-// with the DLC maps' zones, about 19,000. The SPIR-V stays in the file until a shader is used, so the pack may be
-// large; what each shader keeps in memory is its container.
-constexpr size_t kMaxFile = size_t(2) * 1024 * 1024 * 1024;
-constexpr size_t kMaxShaders = 32768;
+// The disc and update zones hold 4,404 shaders (~227 MB of unoptimized SPIR-V); Zombies and Multiplayer with all
+// their DLC, 32,842 (about 3.4 GB). The SPIR-V stays in the file until a shader is used, so the pack may be large;
+// what each shader keeps in memory is its container. The file stays under 4 GB, the largest a FAT32 SD card holds.
+constexpr size_t kMaxFile = size_t(4) * 1024 * 1024 * 1024 - 1;
+constexpr size_t kMaxShaders = 65536;
 constexpr size_t kMaxOriginal = 64 * 1024;
 constexpr size_t kMaxSpirv = 4 * 1024 * 1024;
 

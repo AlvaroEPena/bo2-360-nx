@@ -39,6 +39,12 @@
 // 5 catalog  (host -> joiner): count the part (0..), aux the parts, sequence the catalog revision. Body: the part.
 // 6 world    (host -> joiner): sequence the world revision. Body: text length (u16), text.
 // 7 blasts   (host -> joiner): count hits (1..8). Body: XUID, then each hit's x, y, z (floats).
+// 8 menus?   (joiner -> host): aux the menu table format (bo2zm_mod_hud_wire.h), no body. "This console fits the host's
+//            mod menus": sent every 2 s while in a joined match, Zombies and Multiplayer alike.
+// 9 menus    (host -> joiner): count entries, aux the format, sequence the table's revision; the body is one player's
+//            menu table (bo2zm_mod_hud_wire.h). Sent to every console that asked in the last 6 s, when a table changes
+//            and every second while it holds entries.
+// Consoles of an older build ignore types 8 and 9; a table of another format is ignored.
 // The receiver checks the size, magic, version, type, counts, characters and every value's range before using any of
 // it, and the host checks each command again the way the menu does.
 
@@ -63,12 +69,15 @@
 #include <rex/system/xsocket.h>
 
 #include "bo2zm_cheats.h"
+#include "bo2zm_mod_hud_fit.h"
+#include "bo2zm_mod_hud_wire.h"
 #include "bo2zm_mode.h"
 #include "bo2zm_preset.h"
 
 REXCVAR_DEFINE_BOOL(bo2zm_cheat_sync, true, "BO2",
                     "System Link: send this console's player cheats and cheat commands to the host of a match it "
                     "joined, and run those of players who joined this console's match");
+REXCVAR_DECLARE(bool, bo2zm_mod_hud_fit);
 REXCVAR_DEFINE_BOOL(bo2zm_cheat_sync_trace, false, "BO2",
                     "System Link: log every cheat sync message sent and received (the rare events are always logged)");
 
@@ -80,7 +89,9 @@ using Clock = std::chrono::steady_clock;
 
 constexpr uint32_t kMagic = 0x425A4353;  // "BZCS"
 constexpr uint8_t kVersion = 2;
-enum : uint8_t { kOptions = 1, kAnswer = 2, kCommand = 3, kResult = 4, kCatalog = 5, kWorld = 6, kBlasts = 7 };
+enum : uint8_t {
+  kOptions = 1, kAnswer = 2, kCommand = 3, kResult = 4, kCatalog = 5, kWorld = 6, kBlasts = 7, kMenuAsk = 8, kMenus = 9
+};
 constexpr size_t kHeader = 12;
 constexpr size_t kRevisions = 8;
 constexpr int kMaxPlayers = 4;
@@ -239,6 +250,144 @@ bool Receive(std::array<uint8_t, 2048>& buffer, Received& out) {
     out.body_size = size - kHeader;
     return true;
   }
+}
+
+// ---- Mod menus (bo2zm_mod_hud_wire.h), both sides; Zombies and Multiplayer ----
+
+namespace wire = bo2zm::mod_hud_wire;
+constexpr auto kMenuAskEvery = std::chrono::milliseconds(2000);
+constexpr auto kMenuPeerFresh = std::chrono::milliseconds(6000);
+constexpr auto kMenuEvery = std::chrono::milliseconds(1000);
+constexpr size_t kMaxTables = 32;
+
+// The host: the consoles that asked for the menus, and what each player's table was when last sent.
+struct MenuPeer {
+  uint32_t ip = 0;
+  uint16_t port = 0;
+  Clock::time_point heard{};
+};
+std::array<MenuPeer, 8> g_menu_peers;
+struct MenuSent {
+  bool used = false;
+  uint16_t client = 0;
+  uint32_t revision = 0;
+  Clock::time_point at{};
+  int empty_sends = 0;
+};
+std::array<MenuSent, kMaxTables> g_menu_sent;
+
+void MenuAsked(const Received& in) {
+  if (in.aux != wire::kFormat || in.body_size != 0) return;  // another format: that console cannot read these tables
+  const auto now = Clock::now();
+  MenuPeer* slot = nullptr;
+  for (auto& peer : g_menu_peers) if (peer.ip == in.ip && peer.port == in.port) slot = &peer;
+  if (!slot) {
+    slot = &g_menu_peers[0];
+    for (auto& peer : g_menu_peers) if (!peer.ip || peer.heard < slot->heard) slot = &peer;
+    if (slot->ip) REXLOG_WARN("[cheat sync] mod menus: too many consoles ask; {} is dropped", Ip(slot->ip));
+    REXLOG_INFO("[cheat sync] mod menus: {}:{} fits the host's menus; sending it the players' tables", Ip(in.ip),
+                in.port);
+    *slot = {in.ip, in.port, now};
+  }
+  slot->heard = now;
+}
+
+// Each player's table to every console that asked recently: when it changes, every second while it has entries, and
+// an emptied one once more a second later.
+void MenuPush() {
+  const auto now = Clock::now();
+  int peers = 0;
+  for (auto& peer : g_menu_peers) {
+    if (peer.ip && now - peer.heard > kMenuPeerFresh) {
+      REXLOG_INFO("[cheat sync] mod menus: {} stopped asking", Ip(peer.ip));
+      peer = {};
+    }
+    peers += peer.ip != 0;
+  }
+  if (!peers) return;
+  static std::array<wire::Table, kMaxTables> tables;  // 38 KB, off the stack; only the main frame comes here
+  const size_t count = bo2zm::mod_hud_fit::HostTables(tables.data(), tables.size());
+  for (size_t i = 0; i < count; ++i) {
+    const auto& table = tables[i];
+    MenuSent* sent = nullptr;
+    for (auto& entry : g_menu_sent) if (entry.used && entry.client == table.client) sent = &entry;
+    if (!sent) {
+      for (auto& entry : g_menu_sent) if (!entry.used) { sent = &entry; break; }
+      if (!sent) continue;
+      *sent = {true, table.client, table.revision - 1, {}, 0};
+    }
+    const bool changed = sent->revision != table.revision;
+    if (!changed && (now - sent->at < kMenuEvery || (!table.count && sent->empty_sends >= 2))) continue;
+    Message message(kMenus, table.count, wire::kFormat, table.revision);
+    if (!message.Room(wire::kBodyHeader + size_t(table.count) * wire::kEntryBytes)) continue;
+    const size_t size = wire::Encode(table, message.bytes.data() + message.size);
+    if (!size) continue;
+    message.size += size;
+    for (const auto& peer : g_menu_peers)
+      if (peer.ip) Send(peer.ip, peer.port, message);
+    sent->empty_sends = table.count ? 0 : changed ? 1 : sent->empty_sends + 1;
+    sent->revision = table.revision;
+    sent->at = now;
+    if (Trace()) {
+      REXLOG_INFO("[cheat sync] mod menus: player {} table {} ({} elements) to {} console(s)", table.client,
+                  table.revision, table.count, peers);
+    }
+  }
+}
+
+void MenuHostStop() {
+  g_menu_peers = {};
+  g_menu_sent = {};
+}
+
+// The console that joined: where its tables come from, and when it last asked.
+uint32_t g_menu_host = 0;
+Clock::time_point g_menu_asked{};
+bool g_menu_joined = false;
+
+uint32_t Destination(bool broadcast, bool& sent_broadcast);
+
+void MenuAsk() {
+  if (!REXCVAR_GET(bo2zm_mod_hud_fit)) return;
+  g_menu_joined = true;
+  const auto now = Clock::now();
+  if (g_menu_asked != Clock::time_point{} && now - g_menu_asked < kMenuAskEvery) return;
+  g_menu_asked = now;
+  bool broadcast = false;
+  const uint32_t to = g_menu_host ? g_menu_host : Destination(false, broadcast);
+  if (!to) return;
+  Message message(kMenuAsk, 0, wire::kFormat, 0);
+  const int sent = Send(to, link::HostPort(kSidePort), message);
+  if (Trace() || sent < 0) {
+    REXLOG_INFO("[cheat sync] mod menus: asked {}{}{}", Ip(to), broadcast ? " (the LAN's broadcast)" : "",
+                sent < 0 ? " -- the send failed" : "");
+  }
+}
+
+void MenuReceived(const Received& in) {
+  if (!REXCVAR_GET(bo2zm_mod_hud_fit)) return;
+  wire::Table table;
+  if (!wire::Decode(in.aux, in.count, in.sequence, in.body, in.body_size, table)) {
+    static int logged = 0;
+    if (logged++ < 3) {
+      REXLOG_WARN("[cheat sync] mod menus: ignored a table from {} (format {}, {} entries, {} bytes)", Ip(in.ip),
+                  in.aux, in.count, in.body_size);
+    }
+    return;
+  }
+  if (g_menu_host != in.ip) {
+    REXLOG_INFO("[cheat sync] mod menus: tables from {}", Ip(in.ip));
+    g_menu_host = in.ip;
+  }
+  bo2zm::mod_hud_fit::StoreJoinedTable(table);
+}
+
+void MenuLeave() {
+  if (!g_menu_joined) return;
+  g_menu_joined = false;
+  g_menu_host = 0;
+  g_menu_asked = {};
+  bo2zm::mod_hud_fit::ResetJoinedTables();
 }
 
 // ---- The joiner ----
@@ -463,6 +612,10 @@ void JoinerReceived(PPCContext& ctx, uint8_t* base, const Received& in) {
     if (Trace()) REXLOG_INFO("[cheat sync] {} explosive hit(s) from the host to draw", count);
     return;
   }
+  if (in.type == kMenus) {
+    MenuReceived(in);
+    return;
+  }
   if (Trace()) REXLOG_INFO("[cheat sync] ignored a type {} message from {}", in.type, Ip(in.ip));
 }
 
@@ -470,7 +623,7 @@ void JoinerPoll(PPCContext& ctx, uint8_t* base) {
   std::array<uint8_t, 2048> buffer{};
   Received in;
   while (Receive(buffer, in)) {
-    if (in.type == kOptions || in.type == kCommand) continue;  // another joiner's broadcast
+    if (in.type == kOptions || in.type == kCommand || in.type == kMenuAsk) continue;  // another joiner's broadcast
     if (g_join.host_ip != in.ip) {
       REXLOG_INFO("[cheat sync] the host is {}", Ip(in.ip));
       g_join.host_ip = in.ip;
@@ -485,6 +638,7 @@ void Join(PPCContext& ctx, uint8_t* base) {
     frames = 0;
     JoinerPoll(ctx, base);
   }
+  MenuAsk();
   bo2zm::cheats::SyncedPlayer players[kMaxPlayers];
   const int count = bo2zm::cheats::LocalSyncedPlayers(players, kMaxPlayers);
   Joiner now = g_join;
@@ -811,6 +965,7 @@ void Host(const uint8_t* base) {
     if (polling) {
       polling = false;
       g_peers = {};
+      MenuHostStop();
     }
     return;
   }
@@ -831,9 +986,61 @@ void Host(const uint8_t* base) {
   while (Receive(buffer, in)) {
     if (in.type == kOptions) HostOptions(base, in);
     else if (in.type == kCommand) HostCommand(base, in);
+    else if (in.type == kMenuAsk) MenuAsked(in);
     // Answers, results and pushes are a host's: another match's.
   }
   HostPush();
+  MenuPush();
+}
+
+// Multiplayer, or Zombies with the cheat sync off: only the mod menus' tables. The host is the console whose server
+// runs while another console talks to its game port; a console in a match without its own server joined it.
+void MenusOnly(const uint8_t* base) {
+  static int frames = 0;
+  static bool polling = false;
+  const bool hosting = bo2zm::cheats::LocalServer(base);
+  const bool joined = !hosting && bo2zm::preset::ClientInGame();
+  if (!joined) MenuLeave();
+  if (hosting) {
+    uint32_t peer = 0;
+    int64_t age = 0;
+    if (!(link::LastPeer(kGamePort, &peer, &age) && age < kPeerFresh.count())) {
+      if (polling) {
+        polling = false;
+        MenuHostStop();
+      }
+      return;
+    }
+    if (++frames < kHostPollEvery) return;
+    frames = 0;
+    if (Socket() < 0) return;
+    std::array<uint8_t, 2048> buffer{};
+    Received in;
+    if (!polling) {
+      polling = true;  // whatever waited belongs to an earlier match
+      while (Receive(buffer, in)) {}
+      return;
+    }
+    while (Receive(buffer, in)) {
+      if (in.type == kMenuAsk) MenuAsked(in);
+    }
+    MenuPush();
+    return;
+  }
+  if (polling) {
+    polling = false;
+    MenuHostStop();
+  }
+  if (!joined || !REXCVAR_GET(bo2zm_mod_hud_fit)) return;
+  if (++frames >= kJoinPollEvery) {
+    frames = 0;
+    std::array<uint8_t, 2048> buffer{};
+    Received in;
+    while (Receive(buffer, in)) {
+      if (in.type == kMenus) MenuReceived(in);
+    }
+  }
+  MenuAsk();
 }
 
 }  // namespace
@@ -872,7 +1079,11 @@ void bo2zm::cheat_sync::TraceFrame(bool map_loading, bool local_actor) {
 }
 
 void bo2zm::cheat_sync::EveryFrame(PPCContext& ctx, uint8_t* base) {
-  if (!base || !REXCVAR_GET(bo2zm_cheat_sync) || !bo2zm::mode::IsZombies()) return;
+  if (!base) return;
+  if (!REXCVAR_GET(bo2zm_cheat_sync) || !bo2zm::mode::IsZombies()) {
+    MenusOnly(base);
+    return;
+  }
   static int state = 0;  // 0 neither, 1 hosting, 2 joined
   const bool hosting = bo2zm::cheats::LocalServer(base);
   const bool joined = !hosting && bo2zm::cheats::JoinedRemoteGame();
@@ -887,7 +1098,10 @@ void bo2zm::cheat_sync::EveryFrame(PPCContext& ctx, uint8_t* base) {
   if (hosting) Host(base);
   if (joined) {
     Join(ctx, base);
-  } else if (g_join.active) {
+  } else {
+    MenuLeave();
+  }
+  if (!joined && g_join.active) {
     REXLOG_INFO("[cheat sync] out of the joined match: the host's world settings go back to the game's");
     bo2zm::cheats::ApplyWorldState({});
     g_join = {};

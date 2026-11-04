@@ -34,6 +34,12 @@ bool OnScreenBanner(uint32_t (&codes)[8]);
 // Shows `text` (up to 40 of: A-Z, 0-9, space, : . - % /) there from delay_s from now, for `seconds`; it replaces the
 // message showing. Any thread.
 void ShowBanner(std::string_view text, double delay_s, double seconds);
+// A map's first visit (a new install or shader library) compiles its pipelines one after another, for a minute or more
+// on a Switch, and their draws are skipped until each is ready, so the screen stays mostly black. The renderer calls
+// NoteFirstVisitCompile after each pipeline it really compiles (its compile threads); a run of them in a match shows
+// "FIRST VISIT - PREPARING GRAPHICS <count>" at the top. FirstVisitBuilding: such a run is going on (any thread).
+void NoteFirstVisitCompile();
+bool FirstVisitBuilding();
 
 // The map loading or loaded, as the loading screen named it ("zm_buried zclassic processing": map, game type, start
 // location; empty before the first), its location's label ("BURIED"; empty for a map with none) and the preset in

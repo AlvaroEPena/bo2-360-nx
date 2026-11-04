@@ -71,9 +71,9 @@ Switch between modes from the home menu; **Extras > DEFAULT GAMEMODE** picks the
   speed, noclip and UFO, jump height, gravity, third person and field of view, zombies frozen or ignoring you, any
   round up to 255, power-ups, perks, the map's weapons with Pack-a-Punch, doors and power. Each player has their own in
   split screen, and players who join a System Link or online game keep theirs.
-- **GSC Loader**: compiled Xbox 360 script mods, mod menus included, in Zombies and Multiplayer. In a Local game every
-  player gets the host's menu, fitted to their own part of the screen. Ready-to-use Zombies and Multiplayer mod menu
-  packs are on the [Discord](https://discord.gg/b8qchp7WjX).
+- **GSC Loader**: compiled Xbox 360 script mods, mod menus included, in Zombies and Multiplayer. In a Local or System Link
+  game every player gets the host's menu, fitted to their own part of the screen.
+  Ready-to-use Zombies and Multiplayer mod menu packs are on the [Discord](https://discord.gg/b8qchp7WjX).
 
 ### Graphics and performance
 

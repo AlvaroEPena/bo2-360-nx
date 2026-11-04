@@ -27,7 +27,7 @@ How to use it
    made. Zombies and Multiplayer share one shader library (bo2zm_shaders), Campaign has its own (bo2cp_shaders).
 
 The game files take a few minutes. The shaders take longer on a 16-thread PC: about 10 minutes for Zombies and
-Multiplayer (more with the DLC) and about 20 minutes for Campaign. If it stops (or you close it), double-click
+Multiplayer, about 20 minutes with all their DLC, and about 20 minutes for Campaign. If it stops (or you close it), double-click
 the .bat again: it carries on where it stopped. The log of every step is in work\logs.
 
 

@@ -535,7 +535,7 @@ u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
                   (title_ip >> 16) & 0xFF, (title_ip >> 8) & 0xFF, title_ip & 0xFF,
                   rex::system::online::PublicAddress() ? "online: the public address" : "the LAN address");
     }
-    system_link::MakeXnAddr(title_ip, reinterpret_cast<uint8_t*>(addr_ptr.host_address()));
+    system_link::MakeOwnXnAddr(title_ip, reinterpret_cast<uint8_t*>(addr_ptr.host_address()));
     return XnAddrStatus::XNET_GET_XNADDR_ETHERNET | XnAddrStatus::XNET_GET_XNADDR_STATIC |
            XnAddrStatus::XNET_GET_XNADDR_GATEWAY | XnAddrStatus::XNET_GET_XNADDR_DNS;
   }
@@ -586,13 +586,19 @@ void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string stri
 u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mapped_void xid,
                                     mapped_void in_addr) {
   if (!xn_addr || !in_addr) return 0x2726;  // WSAEINVAL
-  std::memcpy(in_addr.host_address(), &xn_addr->ina, 4);
-  const uint8_t* ina = reinterpret_cast<const uint8_t*>(in_addr.host_address());
-  const uint32_t ip = uint32_t(ina[0]) << 24 | uint32_t(ina[1]) << 16 | uint32_t(ina[2]) << 8 | ina[3];
+  // Online, an XNADDR tagged by another console (MakeOwnXnAddr) gives the address this console knows it by.
+  const uint32_t ip = rex::system::online::PublicAddress()
+                          ? system_link::XnAddrToTitleIp(reinterpret_cast<const uint8_t*>(xn_addr.host_address()))
+                          : 0;
+  uint8_t* out = reinterpret_cast<uint8_t*>(in_addr.host_address());
+  if (ip) {
+    for (int i = 0; i < 4; ++i) out[i] = uint8_t(ip >> (24 - 8 * i));
+  } else {
+    std::memcpy(out, &xn_addr->ina, 4);
+  }
   const uint32_t public_ip = rex::system::online::PublicAddress();
   uint32_t lan_ip = 0;
   if (public_ip && ip == public_ip && system_link::LanAddress(&lan_ip)) {
-    uint8_t* out = reinterpret_cast<uint8_t*>(in_addr.host_address());
     for (int i = 0; i < 4; ++i) out[i] = uint8_t(lan_ip >> (24 - 8 * i));
   }
   if (public_ip && REXCVAR_GET(net_online_trace)) {
@@ -614,10 +620,13 @@ u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, ppc_ptr_t<XNADDR> x
   uint32_t title_ip = 0;
   const bool lan = system_link::TitleAddress(&title_ip);
   uint32_t ip = in_addr;
+  uint8_t* out = reinterpret_cast<uint8_t*>(xn_addr.host_address());
   if (ip == INADDR_LOOPBACK || ip == 0xFFFFFFFFu || ip == 0 || system_link::IsSelf(ip)) {
     ip = lan ? title_ip : INADDR_LOOPBACK;
+    system_link::MakeOwnXnAddr(ip, out);
+  } else {
+    system_link::MakeTitleXnAddr(ip, out);
   }
-  system_link::MakeXnAddr(ip, reinterpret_cast<uint8_t*>(xn_addr.host_address()));
   if (rex::system::online::PublicAddress() && REXCVAR_GET(net_online_trace)) {
     static std::atomic<int> logged{0};
     if (logged.fetch_add(1, std::memory_order_relaxed) < 40) {

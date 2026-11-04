@@ -157,7 +157,7 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(bo2cp
         NAME "Black Ops II 360 NX Campaign"
         AUTHOR "AlvaroEPena"
-        VERSION "1.0.0")
+        VERSION "1.1.0")
 endif()
 
 if(BO2CP_NATIVE)

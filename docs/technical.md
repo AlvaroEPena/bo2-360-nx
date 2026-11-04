@@ -134,7 +134,8 @@ fences, memory waits, occlusion queries and memexport are handled the same way.
 **System Link.** BO2 finds hosts by a broadcast from its UDP port 1001; the host answers with its XNADDR, and the
 joiner connects to that address on port 1000. The runtime gives each console an XNADDR built from its LAN address, a
 per-console XUID, and moves ports below 1024 up by 30000, so the game uses UDP 31000 and 31001. A side socket on UDP
-31002 carries the port's cheat settings from joiners to the host, which applies them to their players.
+31002 carries the port's cheat settings from joiners to the host, which applies them to their players, and the host's
+word on which HUD elements are a script mod's menu, so a joining console fits them into its split-screen views.
 
 **Internet play.** A join code is 8 Crockford base32 characters: the host's IPv4 address and a CRC-8. Joining runs an
 ordinary System Link game over the internet:

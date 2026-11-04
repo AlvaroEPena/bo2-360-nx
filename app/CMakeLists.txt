@@ -354,7 +354,7 @@ if(REXGLUE_PLATFORM_SWITCH)
     rexglue_switch_add_nro(bo2zm
         NAME "Black Ops II 360 NX"
         AUTHOR "AlvaroEPena"
-        VERSION "1.0.0"
+        VERSION "1.1.0"
         ${_bo2zm_icon_arg})
 endif()
 

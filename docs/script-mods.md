@@ -192,7 +192,11 @@ each player itself; the loader does not repeat its startup or bypass verificatio
 and host-only access rules. Some menus already support this, while others need
 changes to their source.
 
-Supported menu-owned 2D HUDs fit their local split-screen viewport automatically.
+Supported menu-owned 2D HUDs fit their local split-screen viewport automatically,
+in a Local game and in a System Link game, on the host and on the consoles that
+joined it. A joining console runs no scripts of its own: the host tells it, over
+the side socket (UDP 31002), which HUD element slots hold a menu element, and it
+fits only an element that is still exactly that one.
 Text and menu materials scale together; the original script objects remain
 unchanged. Stock HUDs and world, shared, 3D or unrecognized asynchronous HUDs keep
 their existing rendering. If ownership or provenance is ambiguous, fitting is

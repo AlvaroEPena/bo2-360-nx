@@ -528,8 +528,9 @@ local function run(mode, inGame, testSpec, focusField, campaignInstalled, instal
     dvars.ui_zm_mapstartlocation = mode == "zombies" and "town" or nil
   end
   if mode ~= "campaign" and not inGame then
-    -- System Link: PrivateLocalGameLobby never announces the Local lobby; a Zombies host gets BOT COUNT and reports
-    -- its party's players; a joiner and Multiplayer get no row and send no bot command.
+    -- System Link: PrivateLocalGameLobby announces itself like the Local lobby (its local players join the same way,
+    -- host and joiner alike); a Zombies host gets BOT COUNT and reports its party's players; a joiner and Multiplayer
+    -- get no row and send no bot command.
     local function rowsOf(lobby)
       local result = {}
       for _, button in ipairs(lobby.buttonPane.body.buttonList.children) do result[button.label] = button end
@@ -547,9 +548,22 @@ local function run(mode, inGame, testSpec, focusField, campaignInstalled, instal
     dvars.ui_zm_mapstartlocation = mode == "zombies" and "transit" or nil
     dvars.bo2zm_bots_available_ui = 1
     systemLink, hosting, partyPlayers = true, true, 2
+    -- The game's System Link rule (two per console), and the Local lobby's (four).
+    dvars.party_maxlocalplayers, dvars.party_maxlocalplayers_systemlink = 2, 2
+    dvars.party_maxlocalplayers_local_splitscreen = 4
     local before = #logs
     local lobby = LUI.createMenu.PrivateLocalGameLobby(0)
-    assert(#sent(before, "bo2zm_local_lobby") == 0, "System Link lobby announced the Local lobby")
+    assert(#sent(before, "bo2zm_local_lobby 1 0") == 1, "the System Link lobby did not let its local players join")
+    assert(dvars.party_maxlocalplayers == 4 and dvars.party_maxlocalplayers_systemlink == 4,
+        "the System Link lobby kept two players per console")
+    -- The game sets its own count again after the lobby opens (the Zombies start-location menu); the lobby's timer
+    -- raises it and the join list's count again.
+    dvars.party_maxlocalplayers_systemlink = 2
+    local joinList, teamList = {addSplitscreenRow = function() end, maxLocalPlayers = 2}, {maxLocalPlayers = 7}
+    lobby.lobbyPane = {body = {lobbyList = {playerLists = {teamList, joinList}}}}
+    lobby:processEvent({name = "bo2zm_local_players", controller = 0})
+    assert(dvars.party_maxlocalplayers_systemlink == 4 and joinList.maxLocalPlayers == 4 and teamList.maxLocalPlayers == 7,
+        "the System Link lobby's join list kept the game's count")
     local current = rowsOf(lobby)
     if mode == "zombies" then
       local selector = assert(current["BOT COUNT"], "System Link host has no bot selector")
@@ -580,6 +594,7 @@ local function run(mode, inGame, testSpec, focusField, campaignInstalled, instal
       hosting, partyPlayers = false, 2
       before = #logs
       local joined = LUI.createMenu.PrivateLocalGameLobby(0)
+      assert(#sent(before, "bo2zm_local_lobby 1 0") == 1, "a joining console's lobby did not let its local players join")
       assert(not rowsOf(joined)["BOT COUNT"], "a joining console got BOT COUNT")
       joined:processEvent({name = "bo2zm_refresh_bots", controller = 0})
       assert(#sent(before, "bo2zm_bots_humans") == 0 and #sent(before, "bo2zm_bots_count") == 0,
@@ -598,6 +613,9 @@ local function run(mode, inGame, testSpec, focusField, campaignInstalled, instal
       LUI.createMenu.SplitscreenGameLobby(0)
       assert(#sent(before, "bo2zm_local_lobby 1") == 1, "the Multiplayer Local lobby stopped announcing itself")
     end
+    local closing = #logs
+    lobby:close()
+    assert(#sent(closing, "bo2zm_local_lobby 0") == 1, "a closed System Link lobby kept its local players' join")
     -- An unexpected PrivateLocalGameLobby outside System Link keeps the earlier Local behavior.
     systemLink, hosting, partyPlayers = false, true, 1
     before = #logs

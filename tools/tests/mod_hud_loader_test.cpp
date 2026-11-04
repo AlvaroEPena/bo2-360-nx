@@ -53,6 +53,7 @@ namespace bo2zm::mode { bool IsZombies() { return true; } }
 namespace bo2zm::bots {
 int Requested(const Context&, int) { return requested_bots; }
 int HumanCount(const uint8_t*) { return 2; }
+int Humans(const uint8_t* base) { return HumanCount(base); }
 void RuntimeStatus(std::string_view) {}
 void SetAvailability(bool, std::string_view) { assert(false); }
 bool MigrateLegacySelection(std::string_view) { assert(false); return false; }

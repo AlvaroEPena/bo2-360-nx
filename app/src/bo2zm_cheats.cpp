@@ -225,6 +225,7 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
+#include <rex/system/xsocket.h>
 
 #include "bo2zm_autoexec.h"
 #include "bo2zm_cheat_sync.h"
@@ -240,6 +241,10 @@ REXCVAR_DEFINE_STRING(bo2zm_test_cheats, "", "BO2",
 REXCVAR_DEFINE_BOOL(bo2zm_test_all_god, false, "BO2",
                     "Test helper: ignore damage to validated local Zombies actors without changing player settings")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(bo2zm_first_visit_wait, false, "BO2",
+                    "A map's first visit: while its graphics are prepared (FIRST VISIT - PREPARING GRAPHICS at the "
+                    "top), a game this console runs for its own players only waits, its clock held almost still. "
+                    "false (the default) = the game runs on and the graphics come in as they are ready");
 
 namespace {
 
@@ -1951,6 +1956,35 @@ void KeepHeldDvars(PPCContext& ctx, uint8_t* base) {
   if (!commands.empty()) {
     bo2zm::dvars::ExecuteIgnoringCheats(ctx, base, commands, pointers);
   }
+}
+
+// A map's first visit compiles its pipelines for a minute or more on a Switch, and their draws are skipped until each
+// is ready (bo2zm::preset::FirstVisitBuilding): meanwhile, in a game this console runs for its own players only, the
+// game's clock is held almost still (timescale), so nothing happens while the screen is dark. Not with other consoles
+// in the game (their players would wait as well), and not while the menu holds timescale itself.
+constexpr uint16_t kGamePortForPeers = 1000;  // BO2's game port: another console in the game talks to it
+
+void SlowWhileBuilding(const uint8_t* base) {
+  static bool slowed = false;
+  bool slow = REXCVAR_GET(bo2zm_first_visit_wait) && bo2zm::preset::FirstVisitBuilding() &&
+              g_in_match.load(std::memory_order_relaxed) && LocalServerRunning(base);
+  if (slow) {
+    uint32_t peer = 0;
+    int64_t age = 0;
+    if (rex::system::system_link::LastPeer(kGamePortForPeers, &peer, &age) && age < 5000) slow = false;
+  }
+  if (slow == slowed) return;
+  std::lock_guard lock(g_held_mutex);
+  for (const Held& h : g_held) {
+    if (h.name == "timescale" && h.menu && !h.release) {
+      slowed = false;  // the player's pick wins, and stays
+      return;
+    }
+  }
+  slowed = slow;
+  HoldLocked("timescale", "0.02", slow);
+  REXLOG_INFO("[cheats] first visit to the map: the game's clock {}", slow ? "held while its graphics are prepared"
+                                                                         : "runs again");
 }
 
 // Logs sv_cheats when it changes, so a test log shows whether the game ever turns it off. Once a second.
@@ -3837,7 +3871,13 @@ void bo2zm::cheats::EveryFrame(PPCContext& ctx, uint8_t* base) {
   if (g_map_loading.load(std::memory_order_acquire) && !primary && bo2zm::preset::ClientInGame() &&
       !LocalServerRunning(base)) EndMapLoad();
   bo2zm::cheat_sync::TraceFrame(g_map_loading.load(std::memory_order_acquire), bool(primary));
-  if (!bo2zm::mode::IsZombies()) { PublishCrosshairOverlays(base); return; }
+  if (!bo2zm::mode::IsZombies()) {
+    PublishCrosshairOverlays(base);
+    bo2zm::cheat_sync::EveryFrame(ctx, base);  // Multiplayer: the mod menus' tables only
+    SlowWhileBuilding(base);
+    KeepHeldDvars(ctx, base);
+    return;
+  }
   if (g_map_loading.load(std::memory_order_acquire)) return;
   for (int local = 0; local < kLocalPlayers; ++local) {
     const Actor actor = LocalActor(local);
@@ -3878,6 +3918,7 @@ void bo2zm::cheats::EveryFrame(PPCContext& ctx, uint8_t* base) {
     HoldLocked("r_dof_enable", "0", third);
   }
   RestoreStockJump(base);
+  SlowWhileBuilding(base);
   KeepHeldDvars(ctx, base);
   WatchSvCheats(base);
   PublishCrosshairOverlays(base);

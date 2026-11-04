@@ -389,7 +389,10 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                     uint32_t(args->playback_client));
 
       playback_client_ = PlaybackClient(uint32_t(args->playback_client));
-      kernel_state_->BroadcastNotification(kMsgPlaybackControllerChanged, !args->playback_client);
+      // The parameter is nonzero while the title controls playback, and titles mute their own music while it is 0
+      // (the player's music is playing then). There is no system music player here, so control never leaves the
+      // title: a title that takes it to override the player's music, and gives it back afterwards, keeps its music.
+      kernel_state_->BroadcastNotification(kMsgPlaybackControllerChanged, 1);
       return X_E_SUCCESS;
     }
     case 0x0007001B: {
@@ -405,7 +408,10 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       assert_true(args->xmp_client == 0x00000002);
       REXKRNL_DEBUG("XMPGetPlaybackController({:08X}, {:08X}, {:08X})", uint32_t(args->xmp_client),
                     uint32_t(args->controller_ptr), uint32_t(args->locked_ptr));
-      memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr), 0);
+      // The title (1): see XMPSetPlaybackController. Answering the system (0) tells a title that the player's own
+      // music is playing, and it mutes its music for the whole session.
+      memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr),
+                                       uint32_t(PlaybackClient::kTitle));
       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->locked_ptr), 0);
 
       if (!XThread::GetCurrentThread()->main_thread()) {

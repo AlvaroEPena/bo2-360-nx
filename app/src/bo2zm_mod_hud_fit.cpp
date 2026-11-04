@@ -3,11 +3,13 @@
 // keep their existing geometry.
 #include "bo2zm_mod_hud_fit.h"
 #include "bo2zm_gsc_mods.h"
+#include "bo2zm_mod_hud_wire.h"
 
 #include <array>
 #include <atomic>
 #include <bitset>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -24,7 +26,8 @@ REXCVAR_DEFINE_BOOL(bo2zm_test_mod_hud_trace, false, "BO2",
                     "Test helper: observe script HUD creation and replication provenance without changing HUDs")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(bo2zm_mod_hud_fit, true, "BO2",
-                    "Fit supported local script HUDs to split-screen views")
+                    "Fit supported local script HUDs to split-screen views (on a console that joined a System Link "
+                    "game: the elements the host names as a mod menu's)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(bo2zm_split_even_margins, true, "BO2",
                     "Split screen: every view keeps the same margins on all four sides, in proportion to its size, so "
@@ -152,7 +155,9 @@ bool GuestSpan(uint32_t address, uint32_t bytes, bool writable = false) {
 
 // Engine view/setup and server-copy threads only, under the host sidecar lock.
 // No renderer callback reads guest memory or pairs compacted overlay indices.
-bool ReadLayout(const uint8_t* base, Layout& out) {
+// server = false: the client's side only (a console that joined another's game has no server records); the views'
+// client field is then 0.
+bool ReadLayout(const uint8_t* base, Layout& out, bool server = true) {
   out = {};
   if (!GuestSpan(0x82C70F44, 4) || !GuestSpan(0x82BBAE68, 4) || !GuestSpan(0x82C153E8, 8)) return false;
   out.allocated = Word(base, 0x82C70F44);
@@ -172,19 +177,22 @@ bool ReadLayout(const uint8_t* base, Layout& out) {
     if (!GuestSpan(cg, 4) || !GuestSpan(cg + 0x4D880, 16)) return false;
     const uint32_t number = Word(base, cg);
     if (number >= 1022) return false;
-    const uint32_t entity = 0x833D0640 + number * 796;
-    if (!GuestSpan(entity, 344)) return false;
-    const uint32_t client = Word(base, entity + 340);
-    if (!base[entity + 251] || client < 0x40000000 || uint64_t(client) + 22520 > 0x100000000ull ||
-        !GuestSpan(client + 416, 4)) return false;
-    // A player who died watches another: their playerstate then carries the followed player's number.
-    const uint32_t shown = Word(base, client + 416);
-    if (shown != number) {
-      const uint32_t followed = 0x833D0640 + shown * 796;
-      if (shown >= 1022 || !GuestSpan(followed, 344) || !base[followed + 251]) return false;
-      const uint32_t followed_client = Word(base, followed + 340);
-      if (followed_client < 0x40000000 || !GuestSpan(followed_client + 416, 4) ||
-          Word(base, followed_client + 416) != shown) return false;
+    uint32_t client = 0;
+    if (server) {
+      const uint32_t entity = 0x833D0640 + number * 796;
+      if (!GuestSpan(entity, 344)) return false;
+      client = Word(base, entity + 340);
+      if (!base[entity + 251] || client < 0x40000000 || uint64_t(client) + 22520 > 0x100000000ull ||
+          !GuestSpan(client + 416, 4)) return false;
+      // A player who died watches another: their playerstate then carries the followed player's number.
+      const uint32_t shown = Word(base, client + 416);
+      if (shown != number) {
+        const uint32_t followed = 0x833D0640 + shown * 796;
+        if (shown >= 1022 || !GuestSpan(followed, 344) || !base[followed + 251]) return false;
+        const uint32_t followed_client = Word(base, followed + 340);
+        if (followed_client < 0x40000000 || !GuestSpan(followed_client + 416, 4) ||
+            Word(base, followed_client + 416) != shown) return false;
+      }
     }
     View view{int(local), controller, number, client, cg,
               int32_t(Word(base, cg + 0x4D880)), int32_t(Word(base, cg + 0x4D884)),
@@ -194,7 +202,8 @@ bool ReadLayout(const uint8_t* base, Layout& out) {
         uint32_t(view.x) > out.width - uint32_t(view.width) ||
         uint32_t(view.y) > out.height - uint32_t(view.height)) return false;
     for (const auto& other : out.actors)
-      if (other.local >= 0 && (other.controller == controller || other.number == number || other.client == client)) return false;
+      if (other.local >= 0 && (other.controller == controller || other.number == number ||
+                               (server && other.client == client))) return false;
     out.actors[local] = view;
   }
   return Word(base, 0x82C70F44) == out.allocated && Word(base, 0x82BBAE68) == array;
@@ -276,11 +285,73 @@ bool LocalListenScope(const uint8_t* base, uint32_t local, uint64_t& identity, L
     raw.connection = uint32_t(connection); raw.connection_type = int32_t(Word(base, raw.connection + 0x24368));
   }
   if (values) *values = raw;
-  if (!(raw.game & 4) || !(raw.session & 1) || raw.demo != 0 ||
+  // A game whose server runs on this console for its local players: a Local game (the Local game mode, bit 2 of the
+  // game mode word, in an offline session, bit 0 of the session mode word) or a System Link game this console hosts
+  // (a System Link session, bit 1, that is not online, bit 2; its lobby sets the private match game mode instead of
+  // the Local one). A console that joined another's game runs no server and its connection is not the loopback one.
+  const bool local_game = (raw.game & 4) && (raw.session & 1);
+  const bool system_link = (raw.session & 6) == 2;
+  if (!(local_game || system_link) || raw.demo != 0 ||
       raw.dvar_type != 1 || raw.running <= 0 || raw.connection_type != 2) return false;
   identity = (connection << 32) | dvar;
   return true;
 }
+// This console hosts a System Link game (a System Link session that is not online, its server running, no demo):
+// the game other consoles join, whose players' menus are sent to them.
+bool HostScope(const uint8_t* base) {
+  for (uint32_t at : {0x837F8CB4u, 0x837F8DC0u, 0x84456C84u})
+    if (!GuestSpan(at, 4)) return false;
+  const uint32_t dvar = Word(base, 0x837F8DC0);
+  return (Word(base, 0x837F8CB4) & 6) == 2 && Word(base, 0x84456C84) == 0 && GuestSpan(dvar, 0x19) &&
+         Word(base, dvar + 0x10) == 1 && base[dvar + 0x18] > 0;
+}
+
+// The host's side: each player's menu elements as its latest snapshot carries them, for the consoles that joined.
+// Written by the snapshot playerstate copy, read by the side channel's frame (HostTables); under mutex.
+struct Published {
+  uint32_t owner = UINT32_MAX;
+  mod_hud_wire::Table table{};
+};
+std::array<Published, 32> published{};
+uint32_t published_revision = 0;
+const uint32_t host_session = [] {
+  const auto ticks = uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
+  return uint32_t(ticks ^ (ticks >> 32)) | 1;
+}();
+void Publish(uint32_t owner, const mod_hud_wire::Table& table) {
+  Published* slot = nullptr;
+  for (auto& entry : published) if (entry.owner == owner) slot = &entry;
+  if (!slot) {
+    if (!table.count) return;  // nothing to say about a player that never had a menu
+    for (auto& entry : published) if (entry.owner == UINT32_MAX) { slot = &entry; break; }
+    if (!slot) return;  // more players with menus than the table holds: the rest stay unfitted on joined consoles
+    slot->owner = owner;
+    slot->table = {};
+  } else if (slot->table == table) {
+    return;
+  }
+  const uint32_t revision = ++published_revision;
+  slot->table = table;
+  slot->table.session = host_session;
+  slot->table.epoch = uint32_t(epoch);
+  slot->table.client = uint16_t(owner);
+  slot->table.revision = revision;
+}
+
+// The joined console's side: the host's tables, by the client number a snapshot playerstate carries. Written by the
+// side channel's frame (StoreJoinedTable), read by the HUD draw; under joined_mutex. joined_count is 0 whenever no
+// table is held, so the draw of a console that joined nobody's game, or a host without mod menus, takes no lock.
+struct Joined {
+  mod_hud_wire::Table table{};
+  std::chrono::steady_clock::time_point received{};
+  bool used = false;
+};
+std::mutex joined_mutex;
+std::array<Joined, 32> joined{};
+uint32_t joined_session = 0, joined_epoch = 0;
+std::atomic<int> joined_count{0};
+constexpr auto kJoinedFresh = std::chrono::milliseconds(3000);  // the host sends every table at least every second
+unsigned joined_fit_reports = 0;
 bool RegisteredPs(const uint8_t* base, uint32_t ps, PsIdentity& out, bool require_client = true) {
   if (!GuestSpan(0x83B44E24, 8)) return false;
   const uint32_t root = Word(base, 0x83B44E24), stride = Word(base, 0x83B44E28);
@@ -485,6 +556,33 @@ bool BuildPlacement(uint8_t* base, const View& view, const Layout& current, uint
   }
   return true;
 }
+// Caller holds mutex. The fitted placement for an element of this view's that qualified: only in split screen (more
+// than one view), the view's own record built from the full-screen one.
+bool FitInto(const PPCContext& ctx, uint8_t* base, const View& view, const Layout& current, uint32_t local,
+             ClientPlacement& out) {
+  unsigned active = 0;
+  for (const auto& actor : current.actors) if (actor.local >= 0) ++active;
+  if (active < 2) return false;
+  if (!synthetic_placements) {
+    auto* memory = rex::Runtime::instance()->memory();
+    synthetic_placements = memory ? memory->SystemHeapAlloc(kPlacementSize * 4) : 0;
+    if (!synthetic_placements) return false;
+  }
+  out.record = synthetic_placements + local * kPlacementSize;
+  out.sp = ctx.r1.u32;
+  out.width = float(view.width); out.height = float(view.height);
+  return BuildPlacement(base, view, current, out.record);
+}
+// The element's slot (0..61) in the snapshot playerstate's two groups, counting only their active prefixes as the
+// snapshot encoder does; -1 when it is not one of them.
+int SnapshotSlot(const uint8_t* base, uint32_t ps, uint32_t hud) {
+  for (uint32_t group = 0; group < 2; ++group) for (uint32_t slot = 0; slot < 31; ++slot) {
+    const auto at = ps + (group ? 6912u : 3068u) + slot * 124;
+    if (!base[at + 0x70]) break;
+    if (at == hud) return int(group * 31 + slot);
+  }
+  return -1;
+}
 bool PreparePlacement(const PPCContext& ctx, uint8_t* base, ClientPlacement& out) {
   if (!REXCVAR_GET(bo2zm_mod_hud_fit) || uint32_t(ctx.lr) != 0x821DC5AC || ctx.r3.u32 >= 4) return false;
   std::lock_guard lock(mutex);
@@ -513,12 +611,7 @@ bool PreparePlacement(const PPCContext& ctx, uint8_t* base, ClientPlacement& out
     if (!OwnerCanFit(base, owner, followed.ps) || followed != ready_identity[owner]) return false;
     identity = followed;
   }
-  int member = -1;
-  for (uint32_t group = 0; group < 2; ++group) for (uint32_t slot = 0; slot < 31; ++slot) {
-    const auto at = ps + (group ? 6912u : 3068u) + slot * 124;
-    if (!base[at + 0x70]) break;
-    if (at == hud) member = int(group * 31 + slot);
-  }
+  const int member = SnapshotSlot(base, ps, hud);
   if (member < 0 || base[hud + 0x79] != 255) return false;
   if (base[hud + 0x70] == 1) {
     const auto body = TextId(base + hud, 0x64), label = TextId(base + hud, 0x56);
@@ -536,22 +629,52 @@ bool PreparePlacement(const PPCContext& ctx, uint8_t* base, ClientPlacement& out
   } else {
     return false;
   }
-  unsigned active = 0;
-  for (const auto& actor : current.actors) if (actor.local >= 0) ++active;
-  if (active < 2) return false;
-  if (!synthetic_placements) {
-    auto* memory = rex::Runtime::instance()->memory();
-    synthetic_placements = memory ? memory->SystemHeapAlloc(kPlacementSize * 4) : 0;
-    if (!synthetic_placements) return false;
-  }
-  out.record = synthetic_placements + local * kPlacementSize;
-  out.sp = ctx.r1.u32;
-  out.width = float(view.width); out.height = float(view.height);
-  if (!BuildPlacement(base, view, current, out.record)) return false;
+  if (!FitInto(ctx, base, view, current, local, out)) return false;
   if (REXCVAR_GET(bo2zm_test_mod_hud_trace) && client_fit_reports[local] < 8) {
     ++client_fit_reports[local];
     REXLOG_INFO("[mod-hud-fit] client epoch={} local={} owner={} hud={:08X} type={} body={} label={} placement={:08X}",
                 epoch, local, owner, hud, base[hud + 0x70], TextId(base + hud, 0x64), TextId(base + hud, 0x56),
+                out.record);
+  }
+  return true;
+}
+// A console that joined another's System Link game: an element its snapshot carries is fitted when the host's latest
+// table (fresh, of the host's current session and map) for the playerstate's client says its slot holds exactly that
+// menu element. That client is the view's player, or the player they watch after dying. Nothing here reads the
+// server's records, which such a console does not have.
+bool PrepareJoinedPlacement(const PPCContext& ctx, uint8_t* base, ClientPlacement& out) {
+  if (!joined_count.load(std::memory_order_acquire) || !REXCVAR_GET(bo2zm_mod_hud_fit) ||
+      uint32_t(ctx.lr) != 0x821DC5AC || ctx.r3.u32 >= 4) return false;
+  const uint32_t local = ctx.r3.u32, hud = ctx.r4.u32;
+  // A console whose own server runs decides from its own evidence (PreparePlacement), never from a table.
+  if (!GuestSpan(0x837F8DC0, 4)) return false;
+  const uint32_t server_dvar = Word(base, 0x837F8DC0);
+  if (!GuestSpan(server_dvar, 0x19) || Word(base, server_dvar + 0x10) != 1 || base[server_dvar + 0x18]) return false;
+  std::lock_guard lock(mutex);
+  Layout current;
+  if (!ReadLayout(base, current, false)) return false;
+  const auto& view = current.actors[local];
+  if (view.local < 0 || !GuestSpan(view.cg + 40, 4)) return false;
+  const uint32_t snapshot = Word(base, view.cg + 40);
+  if (!GuestSpan(snapshot, 16 + 10760)) return false;
+  const uint32_t ps = snapshot + 16, client = Word(base, ps + 416);
+  const int slot = SnapshotSlot(base, ps, hud);
+  if (client >= mod_hud_wire::kMaxClient || slot < 0 || base[hud + 0x79] != 255) return false;
+  {
+    std::lock_guard tables(joined_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    const Joined* held = nullptr;
+    for (const auto& entry : joined)
+      if (entry.used && entry.table.client == client) held = &entry;
+    if (!held || now - held->received > kJoinedFresh) return false;
+    const auto* named = mod_hud_wire::Find(held->table, uint32_t(slot));
+    if (!named || !mod_hud_wire::Matches(base + hud, named->id)) return false;
+  }
+  if (!FitInto(ctx, base, view, current, local, out)) return false;
+  if (REXCVAR_GET(bo2zm_test_mod_hud_trace) && joined_fit_reports < 16) {
+    ++joined_fit_reports;
+    REXLOG_INFO("[mod-hud-fit] joined local={} client={} slot={} hud={:08X} type={} body={} label={} placement={:08X}",
+                local, client, slot, hud, base[hud + 0x70], TextId(base + hud, 0x64), TextId(base + hud, 0x56),
                 out.record);
   }
   return true;
@@ -706,6 +829,7 @@ void BeginEpoch() {
   completed_copies.fill({});
   menu_label_ids.fill({}); qualified_body_ids.fill({}); owner_ready.reset(); owner_blocked.reset(); ready_identity.fill({});
   client_fit_reports.fill(0); owner_block_reports = 0;
+  published.fill({});
   first_unknown_reports = 0;
   positive_id_reports = archive_id_reports = menu_ps_reports = allowed_draw_reports = denied_draw_reports = 0;
 }
@@ -726,6 +850,7 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base) {
       BlockOwner(owner, "bulk playerstate overwrite");
     for (auto& bank : completed_copies) if (bank.epoch == epoch && bank.identity.ps == identity.ps) bank = {};
     menu_body_ids[owner].reset(); menu_label_ids[owner].reset(); qualified_body_ids[owner].reset();
+    Publish(owner, {});  // the consoles that joined stop fitting this player's former elements too
     owner_ready.reset(owner); ready_identity[owner] = {};
     return;
   }
@@ -747,6 +872,10 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base) {
     // Classify the completed producer independently of client draw readiness.
     // Fresh Local scope remains mandatory for qualification and actual fitting.
     const auto* bank = registered && !id_observation_failed ? EvidenceFor(identity, false) : nullptr;
+    // Hosting a System Link game: this copy builds the snapshot the player's console receives, so the menu elements
+    // seen here, slot by slot, are the ones that console may fit.
+    const bool host_scope = registered && HostScope(base);
+    mod_hud_wire::Table table;
     unsigned active = 0, known_menu = 0, unknown = 0;
     for (size_t group = 0; group < 2; ++group) for (size_t slot = 0; slot < 31; ++slot) {
       const uint32_t record = source + (group ? 6912 : 3068) + uint32_t(slot) * 124;
@@ -768,6 +897,10 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base) {
             owner_ready.set(identity.owner); ready_identity[identity.owner] = identity;
           }
         }
+        const uint8_t type = base[record + 0x70];
+        if (host_scope && ((type == mod_hud_wire::kText && body && body < 512 && label < 512 && !stock_ids.test(body) &&
+                            !(label && stock_ids.test(label))) || type == mod_hud_wire::kMaterial))
+          table.entries[table.count++] = {uint8_t(group * 31 + slot), mod_hud_wire::IdOf(base + record)};
       } else {
         const auto label = TextId(base + record, 0x56);
         const bool new_id = (body && body < 512 && !stock_ids.test(body)) ||
@@ -783,6 +916,10 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base) {
           BlockOwner(identity.owner, "ambiguous completed text record");
         ++unknown; RecordVeto(base + record, "unknown-ps", record);
       }
+    }
+    if (host_scope) {
+      if (owner_blocked.test(identity.owner) || id_observation_failed) table.count = 0;
+      Publish(identity.owner, table);
     }
     auto& reports = menu_history ? menu_ps_reports : archive_id_reports;
     if (trace && reports < 8) {
@@ -826,6 +963,46 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base) {
   if (trace && positive_id_reports++ < 64)
     REXLOG_INFO("[mod-hud-id] menu epoch={} owner={} body={} label={} stock_veto={}",
                 epoch, owner, body, label, stock_ids.test(body) || (label && stock_ids.test(label)));
+}
+
+size_t HostTables(mod_hud_wire::Table* out, size_t capacity) {
+  std::lock_guard lock(mutex);
+  size_t count = 0;
+  for (const auto& entry : published)
+    if (entry.owner != UINT32_MAX && count < capacity) out[count++] = entry.table;
+  return count;
+}
+
+void StoreJoinedTable(const mod_hud_wire::Table& table) {
+  std::lock_guard lock(joined_mutex);
+  const auto clear = [] { for (auto& entry : joined) entry = {}; };
+  if (table.session != joined_session) {
+    clear(); joined_session = table.session; joined_epoch = table.epoch;  // another host, or the host restarted
+  } else if (table.epoch != joined_epoch) {
+    if (int32_t(table.epoch - joined_epoch) < 0) return;  // from a map the host has left
+    clear(); joined_epoch = table.epoch;
+  }
+  Joined* slot = nullptr;
+  for (auto& entry : joined) if (entry.used && entry.table.client == table.client) slot = &entry;
+  if (slot && int32_t(table.revision - slot->table.revision) < 0) return;  // overtaken by a newer one
+  if (!slot) {
+    if (!table.count) return;
+    for (auto& entry : joined) if (!entry.used) { slot = &entry; break; }
+    if (!slot) return;
+  }
+  slot->table = table;
+  slot->received = std::chrono::steady_clock::now();
+  slot->used = true;
+  int held = 0;
+  for (const auto& entry : joined) held += entry.used && entry.table.count;
+  joined_count.store(held, std::memory_order_release);
+}
+
+void ResetJoinedTables() {
+  std::lock_guard lock(joined_mutex);
+  for (auto& entry : joined) entry = {};
+  joined_session = joined_epoch = 0;
+  joined_count.store(0, std::memory_order_release);
 }
 
 void EndMapLoad() {
@@ -973,7 +1150,8 @@ REX_HOOK_RAW(sub_821DC058) {
   active = {};
   bo2zm::mod_hud_fit::RestoreHudScale(base);
   bo2zm::mod_hud_fit::ClientPlacement placement;
-  if (!bo2zm::mod_hud_fit::PreparePlacement(ctx, base, placement)) {
+  if (!bo2zm::mod_hud_fit::PreparePlacement(ctx, base, placement) &&
+      !bo2zm::mod_hud_fit::PrepareJoinedPlacement(ctx, base, placement)) {
     __imp__sub_821DC058(ctx, base); return;
   }
   active = placement;

@@ -28,8 +28,8 @@ PadEdit OnPad(const bo2zm::pad::Pad& pad);
 // is up, and makes the join presses for the players it added.
 void EveryFrame();
 
-// The menus' command (bo2zm_commands.cpp): "bo2zm_local_lobby 1 <controller>|0", the Local lobby opened for that
-// controller, or closed. false: not this command.
+// The menus' command (bo2zm_commands.cpp): "bo2zm_local_lobby 1 <controller>|0", the Local or System Link lobby
+// opened for that controller, or closed. false: not this command.
 bool RunCommand(std::string_view name, std::string_view argument);
 
 }  // namespace bo2zm::controllers

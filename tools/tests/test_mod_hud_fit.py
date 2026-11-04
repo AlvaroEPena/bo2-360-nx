@@ -129,7 +129,7 @@ def main():
                   "-Wall", "-Wextra", "-Werror", "-I"+str(directory/"include"), "-I"+str(ROOT/"app/src"),
                   "-I"+str(ROOT/"sdk/include"), "-I"+str(ROOT/"sdk/thirdparty/simde"),
                   "-I"+str(ROOT/"sdk/thirdparty/fmt/include")]
-        for name in ("mod_hud_fit", "mod_hud_loader", "mod_hud_campaign_crt"):
+        for name in ("mod_hud_fit", "mod_hud_wire", "mod_hud_loader", "mod_hud_campaign_crt"):
             exe = directory / (name+".exe")
             linker = ["-Wl,/OPT:REF"] if os.name == "nt" else ["-Wl,--gc-sections"]
             subprocess.run([*common, "-ffunction-sections", "-fdata-sections", *linker,

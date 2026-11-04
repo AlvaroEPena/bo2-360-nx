@@ -298,8 +298,8 @@ def main(argv=None):
     say(f"  DLC:    {', '.join(relevant) if relevant else 'none'}")
     say(f"  output: {out}")
     if make != "files":
-        say("The shaders take a while on a fast PC: about 10 minutes for Zombies and Multiplayer (more with the DLC) "
-            "and about 20 minutes for Campaign.")
+        say("The shaders take a while on a fast PC: about 10 minutes for Zombies and Multiplayer, about 20 with all "
+            "their DLC, and about 20 minutes for Campaign.")
         say("If it stops, run the tool again: it carries on where it stopped.")
     say()
     build_args = bo2zm_install.parser().parse_args(

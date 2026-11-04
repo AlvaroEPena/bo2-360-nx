@@ -72,6 +72,9 @@ void Shutdown();
 
 Status Current();
 uint64_t Version();  // changes with every change of Current()
+// This console's relay session while one runs and a broker has taken it (any thread); 0 otherwise. It tags this
+// console's XNADDR so that consoles behind one public address can tell each other apart (system_link::MakeOwnXnAddr).
+uint64_t TagSession();
 
 }  // namespace relay
 }  // namespace rex::system::online

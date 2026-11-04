@@ -2,7 +2,10 @@
 // unchanged: a mod element is drawn with its view's screen placement replaced.
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <rex/ppc.h>
+
+#include "bo2zm_mod_hud_wire.h"
 
 namespace bo2zm::mod_hud_fit {
 void BeginEpoch();
@@ -22,4 +25,13 @@ void BeforeCopy(const PPCContext& ctx, uint8_t* base);
 // Called after the existing CRT copy. Must not modify registers or invoke guest
 // code; unrelated copies leave through the inexpensive caller guard.
 void AfterCopy(const PPCContext& ctx, uint8_t* base);
+
+// System Link (bo2zm_mod_hud_wire.h). The host: its players' current menu tables, at most capacity of them; none when
+// this console hosts no System Link game or no mod made a menu. Any thread.
+size_t HostTables(mod_hud_wire::Table* out, size_t capacity);
+// A console that joined another's game: a table from the host (checked by mod_hud_wire::Decode), kept until a newer
+// one for the same player, another map or host, ResetJoinedTables, or a few seconds without news replace it.
+void StoreJoinedTable(const mod_hud_wire::Table& table);
+// Out of the joined game: every table goes.
+void ResetJoinedTables();
 }

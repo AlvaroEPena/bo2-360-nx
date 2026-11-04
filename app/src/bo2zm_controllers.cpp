@@ -4,6 +4,9 @@
 // screen's START, as a rule), and later the controller the Local lobby opens for. Until the Local lobby opens the
 // other controllers are not seen in the menus, so none of them can pick LOCAL and lead the lobby.
 //
+// The System Link lobby, on the host and on a console that joined, counts as a Local lobby here: the menus announce
+// both the same way, and their other local players join the same way.
+//
 // In the lobby, on the Switch, the other players join through the system's controller screen (the controller applet):
 // a controller that is not in the lobby and connects or presses a button brings it up. Before it opens, every
 // controller that is not in the lobby is disconnected, so each new player joins on the screen itself, while the
@@ -48,9 +51,9 @@
 #include "bo2zm_cheats.h"
 
 REXCVAR_DEFINE_BOOL(bo2zm_controller_screen, true, "BO2",
-                    "Switch: in the Local lobby a new controller joins through the system's controller screen, "
-                    "which a controller outside the lobby brings up by connecting or pressing a button. false = "
-                    "the game's own join (each player presses A in the lobby)")
+                    "Switch: in the Local and System Link lobbies a new controller joins through the system's "
+                    "controller screen, which a controller outside the lobby brings up by connecting or pressing a "
+                    "button. false = the game's own join (each player presses A in the lobby)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace bo2zm::controllers {

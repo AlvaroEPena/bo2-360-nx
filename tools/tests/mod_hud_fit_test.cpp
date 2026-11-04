@@ -525,6 +525,224 @@ void FittedDrawCases() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// System Link: a game this console hosts fits its local players' menus as a Local game does; an online session, a
+// console that joined (no server, no loopback connection) and a game in neither mode keep the elements unfitted.
+// ---------------------------------------------------------------------------------------------------------------
+void SystemLinkCases() {
+  using namespace bo2zm::mod_hud_fit;
+  FLAGS_bo2zm_test_mod_hud_trace = false; FLAGS_bo2zm_mod_hud_fit = true; FLAGS_bo2zm_split_even_margins = true;
+  // The System Link lobby's modes: the private match game mode (bit 1), a System Link session (bit 1).
+  const auto modes = [](uint32_t game, uint32_t session) { Put(0x837F6A80, game); Put(0x837F8CB4, session); };
+  for (const auto& [game, session] : {std::pair{2u, 2u}, std::pair{0u, 2u}, std::pair{6u, 3u}}) {
+    BeginEpoch(); SetupWorld(2); modes(game, session); ValidVm(); EndMapLoad(); PublishViews(2);
+    std::array<uint32_t, 2> huds{QualifyText(0, 430, 431), QualifyText(1, 432, 433)};
+    for (unsigned local = 0; local < 2; ++local) {
+      const auto seen = Draw(local, huds[local]);
+      assert(Fitted(seen, local) && seen.hud_scale == 1.0f);
+      CheckFittedRecord(local);
+    }
+  }
+  // Online (bit 2 of the session), neither a Local nor a System Link game, a console without a running server, and
+  // one whose connection is not the loopback one: no qualification and no fitting.
+  const uint32_t server_dvar = clients + 0x28000, connection = 0x92000000 + 0x358A8 + 0x24368;
+  for (unsigned gate = 0; gate < 5; ++gate) {
+    BeginEpoch(); SetupWorld(2); modes(2, 2); ValidVm(); EndMapLoad(); PublishViews(2);
+    if (gate == 0) modes(2, 6);
+    if (gate == 1) modes(2, 4);
+    if (gate == 2) modes(4, 0);
+    if (gate == 3) memory[server_dvar + 0x18] = 0;
+    if (gate == 4) Put(connection, 4);
+    const uint32_t ps = ps_root + numbers[1] * ps_stride;
+    auto creation = CreationContext(numbers[1]); sub_8232A280(creation, memory);
+    AuthorPayload(kPool, 1); PutShort(memory + kPool, 0x64, 434); PutShort(memory + kPool, 0x56, 0);
+    auto copy = Copy(kPool); copy.r3.u64 = ps + 3068; rexcrt_bo2zm_memcpy(copy, memory);
+    auto scan = Copy(ps, 0x82439010, 10760); scan.r3.u64 = clients + 0x20000; rexcrt_bo2zm_xmemcpy(scan, memory);
+    assert(!owner_ready.test(numbers[1]));
+    const uint32_t cg = cg_array + 0x87700, snapshot = cg + 0x80;
+    std::memcpy(memory + snapshot + 16, memory + ps, 10760); Put(cg + 40, snapshot);
+    const auto seen = Draw(1, snapshot + 16 + 3068);
+    assert(!Fitted(seen, 1) && seen.hud_scale == kSplitHudScale);
+    memory[server_dvar + 0x18] = 1; Put(connection, 2);
+  }
+  modes(4, 1);
+  std::puts("PASS System Link: a hosted game's local views fit as in a Local game; online, other modes, no server and a "
+            "joined (non-loopback) connection stay unfitted");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// System Link, the consoles that joined: the host publishes each player's menu elements by snapshot slot, and a
+// joined console (no server, no loopback connection) fits only an element its table names in that very slot.
+// ---------------------------------------------------------------------------------------------------------------
+std::vector<bo2zm::mod_hud_wire::Table> Tables() {
+  std::vector<bo2zm::mod_hud_wire::Table> tables(32);
+  tables.resize(bo2zm::mod_hud_fit::HostTables(tables.data(), tables.size()));
+  return tables;
+}
+const bo2zm::mod_hud_wire::Table* TableFor(const std::vector<bo2zm::mod_hud_wire::Table>& tables, uint32_t client) {
+  for (const auto& table : tables) if (table.client == client) return &table;
+  return nullptr;
+}
+// A material menu element in a player's playerstate slot, proven by its live copy and the snapshot copy.
+void QualifyMaterial(unsigned local, uint32_t slot) {
+  using namespace bo2zm::mod_hud_fit;
+  ValidVm();
+  const uint32_t ps = ps_root + numbers[local] * ps_stride;
+  auto creation = CreationContext(numbers[local]); sub_8232A280(creation, memory);
+  AuthorPayload(kPool, 8); PutShort(memory + kPool, 0x64, 0); PutShort(memory + kPool, 0x56, 0);
+  PutShort(memory + kPool, 0x58, int16_t(700 + slot));
+  auto copy = Copy(kPool); copy.r3.u64 = ps + 3068 + slot * 124;
+  rexcrt_bo2zm_memcpy(copy, memory);
+  auto scan = Copy(ps, 0x82439010, 10760); scan.r3.u64 = clients + 0x20000;
+  rexcrt_bo2zm_xmemcpy(scan, memory);
+}
+// Turns the fixture's console into one that joined another's System Link game: no server records, no running
+// server, a connection that is not the loopback one. Each view's snapshot holds the given playerstate.
+void BecomeJoiner() {
+  Put(0x837F6A80, 2); Put(0x837F8CB4, 2);
+  memory[clients + 0x28000 + 0x18] = 0;
+  for (unsigned local = 0; local < 4; ++local) {
+    Put(0x92000000 + local * 0x358A8 + 0x24368, 4);
+    const uint32_t entity = 0x833D0640 + numbers[local] * 796;
+    memory[entity + 251] = 0; Put(entity + 340, 0);
+  }
+  Put(0x83B44E24, 0); Put(0x83B44E28, 0);
+}
+uint32_t JoinedSnapshot(unsigned local, uint32_t from_ps) {
+  const uint32_t cg = cg_array + local * 0x87700, snapshot = cg + 0x80;
+  std::memcpy(memory + snapshot + 16, memory + from_ps, 10760); Put(cg + 40, snapshot);
+  return snapshot + 16;
+}
+void JoinedCases() {
+  using namespace bo2zm::mod_hud_fit;
+  namespace wire = bo2zm::mod_hud_wire;
+  FLAGS_bo2zm_test_mod_hud_trace = false; FLAGS_bo2zm_mod_hud_fit = true; FLAGS_bo2zm_split_even_margins = true;
+  ResetJoinedTables();
+
+  // The host: a System Link game it hosts publishes each player's text and material menu elements by slot.
+  BeginEpoch(); SetupWorld(2); Put(0x837F6A80, 2); Put(0x837F8CB4, 2); ValidVm(); EndMapLoad(); PublishViews(2);
+  QualifyText(1, 440, 441);
+  QualifyMaterial(1, 1);
+  const uint32_t host_ps = ps_root + numbers[1] * ps_stride;
+  auto tables = Tables();
+  const auto* table = TableFor(tables, numbers[1]);
+  assert(table && table->count == 2 && table->client == numbers[1] && table->epoch == uint32_t(epoch));
+  assert(table->entries[0].slot == 0 && table->entries[0].id == wire::IdOf(memory + host_ps + 3068));
+  assert(table->entries[1].slot == 1 && table->entries[1].id == wire::IdOf(memory + host_ps + 3068 + 124));
+  assert(!TableFor(tables, numbers[0]));  // a player without a menu has no table
+  const auto host_table = *table;
+  // Nothing changed: the same revision. A stock text ID in the menu's slot: published without it.
+  auto scan = Copy(host_ps, 0x82439010, 10760); scan.r3.u64 = clients + 0x20000;
+  rexcrt_bo2zm_xmemcpy(scan, memory);
+  assert(TableFor(Tables(), numbers[1])->revision == host_table.revision);
+  stock_ids.set(441); rexcrt_bo2zm_xmemcpy(scan, memory);
+  {
+    const auto now = Tables();
+    const auto* vetoed = TableFor(now, numbers[1]);
+    assert(vetoed && vetoed->revision != host_table.revision && (vetoed->count == 0 ||
+           (vetoed->count == 1 && vetoed->entries[0].slot == 1)));
+  }
+  // A Local game, or no running server: nothing published.
+  for (unsigned gate = 0; gate < 2; ++gate) {
+    BeginEpoch(); SetupWorld(2); ValidVm(); EndMapLoad(); PublishViews(2);
+    if (gate == 1) { Put(0x837F6A80, 2); Put(0x837F8CB4, 2); memory[clients + 0x28000 + 0x18] = 0; }
+    QualifyMaterial(1, 0);
+    assert(Tables().empty());
+  }
+  // A player who dies and watches another: the game copies the followed player's playerstate over theirs, and their
+  // table empties.
+  BeginEpoch(); SetupWorld(2); Put(0x837F6A80, 2); Put(0x837F8CB4, 2); ValidVm(); EndMapLoad(); PublishViews(2);
+  QualifyMaterial(1, 0);
+  assert(TableFor(Tables(), numbers[1]) && TableFor(Tables(), numbers[1])->count == 1);
+  auto follow = Copy(ps_root + numbers[0] * ps_stride, 0x8230369C, 10760); follow.r3.u64 = host_ps;
+  rexcrt_bo2zm_xmemcpy(follow, memory);
+  assert(TableFor(Tables(), numbers[1]) && TableFor(Tables(), numbers[1])->count == 0);
+
+  // The joined console: the same elements in its snapshot, the host's table stored.
+  BeginEpoch(); SetupWorld(2); Put(0x837F6A80, 2); Put(0x837F8CB4, 2); ValidVm(); EndMapLoad(); PublishViews(2);
+  stock_ids.reset(441);
+  QualifyText(1, 442, 443); QualifyMaterial(1, 1);
+  const auto published_table = *TableFor(Tables(), numbers[1]);
+  std::vector<uint8_t> host_bytes(memory + host_ps, memory + host_ps + 10760);
+  BeginEpoch();  // the joiner holds none of the host's evidence
+  SetupLayout(2); AuthorPlacements(2); BecomeJoiner(); PublishViews(2);
+  std::memcpy(memory + host_ps, host_bytes.data(), host_bytes.size());  // only as the snapshot source
+  const uint32_t ps1 = JoinedSnapshot(1, host_ps);
+  const uint32_t text = ps1 + 3068, material = ps1 + 3068 + 124;
+  // Without a table: unfitted.
+  assert(!Fitted(Draw(1, text), 1) && !Fitted(Draw(1, material), 1));
+  // Encoded and decoded as the side channel carries it, then stored.
+  std::array<uint8_t, wire::kMaxBody> body{};
+  const size_t size = wire::Encode(published_table, body.data());
+  wire::Table received;
+  assert(size && wire::Decode(wire::kFormat, published_table.count, published_table.revision, body.data(), size,
+                              received));
+  StoreJoinedTable(received);
+  for (const uint32_t hud : {text, material}) {
+    const auto& seen = Draw(1, hud);
+    assert(Fitted(seen, 1) && seen.hud_scale == 1.0f);
+    CheckFittedRecord(1);
+  }
+  // An element the table does not name: another slot, a changed text, a changed material, past the active prefix.
+  std::memcpy(memory + ps1 + 3068 + 2 * 124, memory + material, 124);
+  assert(!Fitted(Draw(1, ps1 + 3068 + 2 * 124), 1));
+  memory[ps1 + 3068 + 2 * 124 + 0x70] = 0;
+  PutShort(memory + text, 0x64, 444); assert(!Fitted(Draw(1, text), 1)); PutShort(memory + text, 0x64, 442);
+  PutShort(memory + material, 0x58, 5); assert(!Fitted(Draw(1, material), 1)); PutShort(memory + material, 0x58, 701);
+  assert(Fitted(Draw(1, material), 1));
+  PutScalar(memory + text, 0, 33.0f); assert(Fitted(Draw(1, text), 1));  // moved: still the menu's element
+  // Another client's snapshot (player 0's, who has no table), or the playerstate of another client number.
+  const uint32_t ps0 = JoinedSnapshot(0, host_ps);
+  Put(ps0 + 416, numbers[0]);
+  assert(!Fitted(Draw(0, ps0 + 3068), 0));
+  // A dead player watching player 1: their snapshot carries player 1's number and elements, fitted in their view.
+  Put(ps0 + 416, numbers[1]);
+  assert(Fitted(Draw(0, ps0 + 3068), 0));
+  Put(ps0 + 416, numbers[0]);
+  // The setting off, one view only, or this console running the server: the joined path stays out.
+  FLAGS_bo2zm_mod_hud_fit = false; assert(!Fitted(Draw(1, text), 1)); FLAGS_bo2zm_mod_hud_fit = true;
+  Put(0x837F6A28, 0);  // player 0 gone: a single view
+  assert(!Fitted(Draw(1, text), 1));
+  Put(0x837F6A28, 1);
+  assert(Fitted(Draw(1, text), 1));
+  // Stale: no news for longer than the host's resends allow.
+  for (auto& entry : joined) if (entry.used) entry.received -= std::chrono::seconds(4);
+  assert(!Fitted(Draw(1, text), 1));
+  StoreJoinedTable(received);  // the same revision again refreshes it
+  assert(Fitted(Draw(1, text), 1));
+  // An older revision does not replace a newer one; an emptied table stops the fitting.
+  auto empty = received; empty.count = 0; empty.revision = received.revision + 1;
+  StoreJoinedTable(empty);
+  assert(!Fitted(Draw(1, text), 1) && joined_count.load() == 0);
+  StoreJoinedTable(received);
+  assert(!Fitted(Draw(1, text), 1));
+  // A table from the host's earlier map is ignored; a newer map's or another host's replaces everything.
+  auto newer = received; newer.revision = received.revision + 2;
+  StoreJoinedTable(newer); assert(Fitted(Draw(1, text), 1));
+  auto old_map = newer; old_map.epoch = newer.epoch - 1; old_map.revision = newer.revision + 1; old_map.client = 7;
+  StoreJoinedTable(old_map);
+  for (const auto& entry : joined) assert(!entry.used || entry.table.client != 7);
+  auto next_map = newer; next_map.epoch = newer.epoch + 1; next_map.client = 9;
+  StoreJoinedTable(next_map);
+  assert(!Fitted(Draw(1, text), 1));  // player 1's table was the old map's
+  auto other_host = newer; other_host.session ^= 0x5A5A;
+  StoreJoinedTable(other_host); assert(Fitted(Draw(1, text), 1));
+  // Leaving the joined game: every table goes.
+  ResetJoinedTables();
+  assert(!Fitted(Draw(1, text), 1) && joined_count.load() == 0);
+  // A console with its own server never takes the joined path, even with a table held: without its own evidence
+  // the element stays unfitted.
+  StoreJoinedTable(other_host);
+  assert(Fitted(Draw(1, text), 1));
+  memory[clients + 0x28000 + 0x18] = 1;
+  assert(!Fitted(Draw(1, text), 1));
+  memory[clients + 0x28000 + 0x18] = 0;
+  ResetJoinedTables();
+  std::puts("PASS System Link joined: host tables by slot (text and material, stock veto, Local/no-server publish "
+            "nothing, emptied on the spectator overwrite), joined draws fitted only for the named slot and element, "
+            "spectating, setting off, single view, stale, older revision, emptied, older map, new host, reset");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // 3: material quads in a fitted two-player view (1280x360; the full screen shrunk to 640x360 at x 320).
 // ---------------------------------------------------------------------------------------------------------------
 void QuadCases() {
@@ -1129,6 +1347,8 @@ int main() {
   assert(!map_ready && views[0].local == -1);
 
   FittedDrawCases();
+  SystemLinkCases();
+  JoinedCases();
   QuadCases();
   SafeAreaCases();
   LocalHostCases();

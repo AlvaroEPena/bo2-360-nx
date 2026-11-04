@@ -63,6 +63,7 @@
 #include <rex/logging.h>
 
 #include "bo2zm_autoexec.h"
+#include "bo2zm_cheats.h"
 #include "bo2zm_dvars.h"
 #include "bo2zm_game.h"
 #include "bo2zm_mode.h"
@@ -1251,6 +1252,33 @@ void ShowBanner(std::string_view text, double delay_s, double seconds) {
   g_banner_from.store(from, std::memory_order_relaxed);
   g_banner_until.store(from + int64_t(seconds * 1e9), std::memory_order_release);
 }
+
+namespace {
+// A run: compiles less than 2 s apart. It shows from its 8th compile in a match (a new effect in normal play compiles
+// one or two), and counts as going on until 3 s after its last.
+constexpr int kVisitRun = 8;
+std::mutex g_visit_mutex;
+Clock::time_point g_visit_last{};
+int g_visit_count = 0;
+std::atomic<int64_t> g_visit_until{0};
+}  // namespace
+
+void NoteFirstVisitCompile() {
+  const auto now = Clock::now();
+  int count = 0;
+  {
+    std::lock_guard lock(g_visit_mutex);
+    if (now - g_visit_last > std::chrono::seconds(2)) g_visit_count = 0;
+    g_visit_last = now;
+    count = ++g_visit_count;
+  }
+  if (count < kVisitRun || !bo2zm::cheats::InMatch()) return;
+  if (count == kVisitRun) REXLOG_INFO("[preset] first visit: the map's graphics are being prepared");
+  g_visit_until.store(Ns(now) + 3'000'000'000ll, std::memory_order_relaxed);
+  ShowBanner("FIRST VISIT - PREPARING GRAPHICS " + std::to_string(count), 0.0, 3.0);
+}
+
+bool FirstVisitBuilding() { return Ns(Clock::now()) < g_visit_until.load(std::memory_order_relaxed); }
 
 std::string LoadedMap() {
   std::lock_guard<std::mutex> lock(g_map_mutex);

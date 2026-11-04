@@ -182,6 +182,18 @@ bool LanAddress(uint32_t* ip, uint32_t* mask = nullptr);
 // The XNADDR (36 bytes, as the guest stores it) of the console with this LAN address: ina = the address, abEnet made
 // from it, so every peer derives the same XNADDR from the same address.
 void MakeXnAddr(uint32_t ip, uint8_t* xnaddr);
+// Online play: the XNADDR of this console (ip: the address it carries), tagged with its relay session and LAN address
+// while the relay runs (online::relay::TagSession). The title compares XNADDRs whole, and consoles behind one public
+// address are otherwise the same.
+void MakeOwnXnAddr(uint32_t ip, uint8_t* xnaddr);
+// The XNADDR of the console the title knows by this address: the console's own, tag included, when it is known to tag
+// it; otherwise MakeXnAddr(ip).
+void MakeTitleXnAddr(uint32_t ip, uint8_t* xnaddr);
+// The address the title reaches the console of an XNADDR at: ina, unless the XNADDR is tagged by another console: then
+// its stand-in or public address (TitleIpFor), or its LAN address when it is behind this console's own public address.
+uint32_t XnAddrToTitleIp(const uint8_t* xnaddr);
+// The relay's word on a console's LAN address (its endpoints' last entry); the console tags its XNADDR.
+void NameConsoleLan(uint32_t ip, uint64_t console, uint32_t lan_ip);
 // The address this console's own XNADDR carries: its public address while online play is on (online_link.h), its LAN
 // address otherwise. false without a network.
 bool TitleAddress(uint32_t* ip);
@@ -219,12 +231,13 @@ int SideReceive(int64_t socket, void* data, uint32_t capacity, uint32_t* ip, uin
 int SendFromPort(uint16_t host_port, uint32_t ip, uint16_t port, const void* data, uint32_t size);
 // Reads what waits on the side socket: the relay's datagrams are taken, the rest is kept for SideReceive.
 void PumpSideSocket();
-// A console on the internet that, the relay says, sends from host_port for the title's guest_port. Sends to it use that
-// port until the console is heard from (and the port it is heard from wins).
-void SeedInternetPeer(uint32_t ip, uint16_t guest_port, uint16_t host_port);
-// Something (a game datagram or a punch) arrived from ip on a title or side socket since ForgetInternetPeers: true,
-// with the title port and the port it came from.
-bool HeardInternetPeer(uint32_t ip, uint16_t* guest_port = nullptr, uint16_t* host_port = nullptr);
+// A console on the internet that, the relay says, sends from host_port for the title's guest_port; console is its relay
+// session (0 while unknown), which tells consoles behind one public address apart. Sends to it use that port until the
+// console is heard from (and the port it is heard from wins).
+void SeedInternetPeer(uint32_t ip, uint16_t guest_port, uint16_t host_port, uint64_t console);
+// Something (a game datagram or a punch) arrived from ip:host_port on a title or side socket since
+// ForgetInternetPeers: true, with the title port it was for.
+bool HeardInternetPeer(uint32_t ip, uint16_t host_port, uint16_t* guest_port = nullptr);
 void ForgetInternetPeers();
 }  // namespace system_link
 
