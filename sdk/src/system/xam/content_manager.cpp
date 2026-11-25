@@ -500,6 +500,15 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
   content_license = package->GetPackageLicense();
+  // Black Ops II treats a marketplace package whose license mask is exactly 1 as a trial pack, usable only in an online
+  // session (default_mp.xex TU18: 82412840 checks slot license == 1 -> Com_SessionMode online bit). The header's mask
+  // is only the package's own STFS license bits, and Nuketown 2025, Nuketown Zombies and the Season Pass carry bits 1,
+  // so they vanished from every local game. Installed DLC is owned DLC: report it fully licensed.
+  if (data.content_type == XContentType::kMarketplaceContent) {
+    content_license = 0xFFFFFFFF;
+  }
+  REXSYS_INFO("[dlc] open '{}': license mask {:08X} (header {:08X})", data.file_name(), content_license,
+              package->GetPackageLicense());
 
   {
     auto global_lock = global_critical_region_.Acquire();
